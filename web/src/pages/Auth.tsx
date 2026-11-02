@@ -87,7 +87,7 @@ function Art() {
     <div className="auth-art">
       <canvas ref={ref} aria-hidden="true" />
       <div className="cap">
-        <h2>Your plant, understood.</h2>
+        <h2>Your operation, understood.</h2>
         <p>Connect your data, point a camera at the work, and Irris checks every step against your procedures.</p>
       </div>
     </div>
@@ -200,7 +200,7 @@ export function Signup() {
           </Field>
           {!invite && (
             <div className="grid2" style={{ gap: 12 }}>
-              <Field label="Team or plant">
+              <Field label="Team or company">
                 <input className="input" required value={f.workspace} onChange={set("workspace")} placeholder="Line 3" />
               </Field>
               <Field label="Industry">

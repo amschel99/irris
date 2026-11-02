@@ -551,7 +551,7 @@ function ExportTab() {
       <div>
         <h2>Training data</h2>
         <p className="muted" style={{ margin: "4px 0 0" }}>
-          Irris learns your plant from your data, your instructions, your procedures and your lessons, and uses them in every answer. To fine-tune a model of your own, export everything in chat format.
+          Irris learns your operation from your data, your instructions, your procedures and your lessons, and uses them in every answer. To fine-tune a model of your own, export everything in chat format.
         </p>
       </div>
       <div className="note">One JSON object per line: every conversation as <span className="mono">{`{"messages": [...]}`}</span>, then each lesson and procedure. Works with most fine-tuning tools (OpenAI, Together, Unsloth, Axolotl).</div>

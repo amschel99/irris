@@ -96,7 +96,7 @@ export function Overview() {
           <label className="ask-bar">
             <Sparkles />
             <span className="sr">Ask Irris</span>
-            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask Irris anything about your plant, data or procedures" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Ask Irris anything about your operation, data or procedures" />
             <button className="btn primary icon" aria-label="Ask" disabled={!q.trim()}><CornerDownLeft /></button>
           </label>
           <div className="chips">
@@ -222,7 +222,7 @@ export function Overview() {
                 </ul>
               ) : (
                 <Empty title="Nothing here yet" action={<Link className="btn sm" to="/data">Connect data</Link>}>
-                  Upload a manual, a CSV of batches or a maintenance log, and Irris starts learning your plant.
+                  Upload a manual, a CSV of batches or a maintenance log, and Irris starts learning your operation.
                 </Empty>
               )}
             </section>

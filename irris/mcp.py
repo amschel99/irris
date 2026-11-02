@@ -20,7 +20,7 @@ INSTRUCTIONS = ("Irris is the AI twin of a manufacturing or engineering team: th
                 "data in the Irris Record Format (see the irris://irf resource) or any JSON.")
 
 TOOLS: list[dict] = [
-    {"name": "ask", "description": "Ask Irris anything about the team's plant, products, data and procedures. She "
+    {"name": "ask", "description": "Ask Irris anything about the team's operation, products, data and procedures. She "
      "searches, queries their databases and looks through cameras herself, and cites sources. Pass the returned "
      "conversation_id to continue.",
      "inputSchema": {"type": "object", "properties": {"message": {"type": "string"},

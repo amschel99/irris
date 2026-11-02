@@ -259,7 +259,7 @@ function DatabasesTab() {
           <form className="stack" onSubmit={connect}>
             <Field label="Name"><input className="input" value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} placeholder="MES" /></Field>
             <Field label="Connection string" hint="Stored encrypted and never shown again. Create a user with SELECT only.">
-              <input className="input mono" required value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} placeholder="postgresql://irris_ro:…@db.plant.local:5432/mes" autoComplete="off" spellCheck={false} />
+              <input className="input mono" required value={f.url} onChange={(e) => setF({ ...f, url: e.target.value })} placeholder="postgresql://irris_ro:…@db.internal.local:5432/mes" autoComplete="off" spellCheck={false} />
             </Field>
             {formError && <div className="error-box">{formError}</div>}
             <div className="row" style={{ justifyContent: "flex-end" }}>

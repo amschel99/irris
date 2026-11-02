@@ -109,7 +109,7 @@ export function Composer({ onSend, busy, onStop, placeholder, autoFocus, mic = t
         value={text}
         autoFocus={autoFocus}
         aria-label="Message"
-        placeholder={placeholder || "Ask about your plant, data or procedures"}
+        placeholder={placeholder || "Ask about your operation, data or procedures"}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {

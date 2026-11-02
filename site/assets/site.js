@@ -259,11 +259,12 @@
       const region = portrait ? [[2, -13], [40, -13], [40, 18], [2, 18]] : [[-1.6, -14], [58, -14], [58, 18.6], [-1.6, 18.6]];
       const rp = region.map(([u, v]) => raw(u, v, 0));
       const rb = bbox(rp);
-      const top = Math.max(safe.top - (portrait ? 30 : 10), 40), bot = Math.min(safe.bottom + (portrait ? 10 : 20), h - 20);
-      const availW = w * (portrait ? 1.25 : 1.04), availH = Math.max(bot - top, h * 0.32) * (portrait ? 1.15 : 1.12);
+      // the board stays clear of the buttons: it fits between the headline and a margin above them
+      const top = Math.max(safe.top + (portrait ? 4 : 12), 40), bot = Math.min(safe.bottom - (portrait ? 20 : 32), h - 20);
+      const availW = w * (portrait ? 1.1 : 0.92), availH = Math.max(bot - top, h * 0.28);
       f = Math.min(availW / rb.w, availH / rb.h) * (opts.zoom || 1);
       ox = w / 2 - (rb.x + rb.w / 2) * f + Math.sin(t * 0.05) * 6 * drift;
-      oy = (top + bot) / 2 - (rb.y + rb.h / 2) * f + (portrait ? 20 : 26);
+      oy = (top + bot) / 2 - (rb.y + rb.h / 2) * f;
       const P = (u, v, z = 0) => { const r = raw(u, v, z); return [ox + r[0] * f, oy + r[1] * f, r[2]]; };
       const S = (u, v) => f / raw(u, v, 0)[2];          // pixels per pitch at that spot
       const unit = S(cu, cv);
@@ -791,7 +792,7 @@
     hud(ctx, w, h, "PHONE · REAR CAMERA · 1080P", "850 RPM · IDLE · OCR · VLM");
   }
 
-  /* ================================================================ Cables into the twin (It knows your plant) */
+  /* ================================================================ Cables into the twin (It knows your operation) */
   const SOURCES = [
     { name: "press-7", icon: "press", cite: "press-7 · cycle 4410" },
     { name: "line-3/plc", icon: "plc", cite: "line-3/plc · 08:15" },

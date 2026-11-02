@@ -61,7 +61,7 @@ function MembersTab() {
     <div className="stack lg" style={{ maxWidth: 760 }}>
       {isAdmin && (
         <form className="row wrap" onSubmit={invite}>
-          <input className="input grow" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="colleague@plant.co" aria-label="Email" style={{ minWidth: 220 }} />
+          <input className="input grow" type="email" required value={email} onChange={(e) => setEmail(e.target.value)} placeholder="colleague@company.co" aria-label="Email" style={{ minWidth: 220 }} />
           <select className="select input" style={{ width: 130 }} value={role} onChange={(e) => setRole(e.target.value)} aria-label="Role">
             <option value="member">Member</option>
             <option value="admin">Admin</option>

@@ -102,8 +102,8 @@ function WorkspaceSwitch() {
       {creating && (
         <Modal title="New workspace" onClose={() => setCreating(false)}>
           <form className="stack" onSubmit={create}>
-            <Field label="Name" hint="One workspace per plant, line or team. Data never crosses workspaces.">
-              <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Nairobi plant" required />
+            <Field label="Name" hint="One workspace per site, line or team. Data never crosses workspaces.">
+              <input className="input" autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Nairobi line 3" required />
             </Field>
             <div className="row" style={{ justifyContent: "flex-end" }}>
               <button type="button" className="btn" onClick={() => setCreating(false)}>Cancel</button>
