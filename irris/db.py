@@ -73,6 +73,8 @@ CREATE TABLE IF NOT EXISTS messages (
   id {SERIAL}, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
   meta TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_conv ON messages (conversation_id, id);
+-- ==== knowledge: jobs, embeddings, memory (irris/jobs.py, irris/embed.py, irris/memory.py) ====
+-- ==== media: voice, watch rules, video (irris/voice.py, irris/watch.py) ====
 """
 
 PG_EXTRA = """

@@ -145,8 +145,8 @@ async def vision_check(db: Database, workspace: dict, run_id: str, jpeg: bytes) 
                         types=["document", "lesson", "row", "asset"])
     knowledge = "\n".join(f"- ({h['title'] or h['type']}{', p. ' + str(h['page']) if h['page'] else ''}) "
                           f"{h['text'][:400]}" for h in hits)
-    model = llm.resolve(workspace, "vlm")
-    if not model.ready:
+    models = llm.chain(workspace, "vlm")
+    if not models:
         raise RunError("no vision model is set up. Add one in Settings → Models, or mark the step by hand.")
-    out = await vision.check_step(model, jpeg, step, s["step"], len(s["steps"]), knowledge)
+    out = await vision.check_step(models, jpeg, step, s["step"], len(s["steps"]), knowledge)
     return {"check": out, "run": record(db, ws_id, run_id, out["result"], say=out["say"], reading=out["reading"])}

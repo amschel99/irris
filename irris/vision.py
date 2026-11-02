@@ -119,15 +119,16 @@ def _reading(value) -> dict | None:
         return None
 
 
-async def look(model: llm.Model, jpeg: bytes, question: str, context: str = "") -> dict:
+async def look(models: list[llm.Model], jpeg: bytes, question: str, context: str = "") -> dict:
     content = [{"type": "text", "text": (context + "\n\n" if context else "") + f"Question: {question}"},
                llm.image_part(shrink(jpeg))]
-    msg = await llm.chat(model, [{"role": "system", "content": LOOK_PROMPT}, {"role": "user", "content": content}],
+    msg = await llm.chat_chain(models, [{"role": "system", "content": LOOK_PROMPT}, {"role": "user", "content": content}],
                          max_tokens=400, timeout=180)
     raw = msg.get("content") or ""
     out = llm.parse_json(raw)
     status = out.get("status") if out.get("status") in STATUSES else "unsure"
-    return {"say": str(out.get("say") or raw).strip()[:1200], "status": status, "reading": _reading(out.get("reading"))}
+    return {"say": str(out.get("say") or raw).strip()[:1200], "status": status, "reading": _reading(out.get("reading")),
+            "model": msg.get("_model", "")}
 
 
 def step_context(step: dict, index: int, total: int, knowledge: str = "") -> str:
@@ -161,9 +162,9 @@ def judge_reading(step: dict, reading: dict | None) -> tuple[bool | None, str]:
     return True, ""
 
 
-async def check_step(model: llm.Model, jpeg: bytes, step: dict, index: int, total: int, knowledge: str = "") -> dict:
+async def check_step(models: list[llm.Model], jpeg: bytes, step: dict, index: int, total: int, knowledge: str = "") -> dict:
     content = [{"type": "text", "text": step_context(step, index, total, knowledge)}, llm.image_part(shrink(jpeg))]
-    msg = await llm.chat(model, [{"role": "system", "content": CHECK_PROMPT}, {"role": "user", "content": content}],
+    msg = await llm.chat_chain(models, [{"role": "system", "content": CHECK_PROMPT}, {"role": "user", "content": content}],
                          max_tokens=400, timeout=180)
     raw = msg.get("content") or ""
     out = llm.parse_json(raw)
@@ -176,4 +177,4 @@ async def check_step(model: llm.Model, jpeg: bytes, step: dict, index: int, tota
             result, say = "unsure", "I can't read the value yet. Point the camera at the display."
         else:
             result, say = "fail", f"Out of spec: {why}."
-    return {"result": result, "say": say, "reading": reading}
+    return {"result": result, "say": say, "reading": reading, "model": msg.get("_model", "")}

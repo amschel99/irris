@@ -151,7 +151,7 @@ def test_ask_with_a_model_uses_tools_and_cites(signed_in, monkeypatch):
                                    "text": "Dry the PA66 resin at 80 C for 4 hours before moulding."})
     calls = []
 
-    async def fake_chat(model, messages, tools=None, **kw):
+    async def fake_chat(models, messages, tools=None, **kw):
         calls.append(messages)
         if len(calls) == 1:
             return {"content": "", "tool_calls": [{"id": "1", "type": "function", "function": {
@@ -160,8 +160,8 @@ def test_ask_with_a_model_uses_tools_and_cites(signed_in, monkeypatch):
         assert tool_msg["results"][0]["cite"] == "[1]"
         return {"content": "Dry it at 80 C for 4 hours [1]."}
 
-    monkeypatch.setattr(llm, "chat", fake_chat)
-    monkeypatch.setattr(llm, "resolve", lambda ws, kind: llm.Model("http://model", "k", "m"))
+    monkeypatch.setattr(llm, "chat_chain", fake_chat)
+    monkeypatch.setattr(llm, "chain", lambda ws, kind: [llm.Model("http://model", "k", "m")])
     r = c.post("/api/v1/ask", json={"message": "PA66 drying?"}).json()
     assert r["reply"].endswith("[1].") and r["tools"] == ["search"] and r["sources"][0]["title"] == "Dryer SOP"
     calls.clear()
@@ -247,3 +247,24 @@ def test_cameras_are_private_to_their_workspace(signed_in):
     assert c.post("/api/v1/ask", json={"message": "what do you see", "camera_id": cam["id"]}).status_code == 404
     assert c.get(f"/api/v1/cameras/{cam['id']}/frame.jpg").status_code == 404
     assert c.post(f"/api/v1/cameras/{cam['id']}/frame", content=b"\xff\xd8x\xff\xd9").status_code == 404
+
+
+def test_vision_falls_back_to_the_cpu_model(monkeypatch):
+    import asyncio
+    from irris import llm
+    gpu, cpu = llm.Model("http://gpu:11434/v1", "", "qwen"), llm.Model("http://127.0.0.1:11434/v1", "", "qwen")
+    seen = []
+
+    async def fake(m, messages, tools=None, **kw):
+        seen.append(m.base_url)
+        if m is gpu:
+            raise llm.ModelError("model unreachable: ConnectError")
+        return {"content": '{"say": "ok", "status": "ok", "reading": null}'}
+
+    monkeypatch.setattr(llm, "chat", fake)
+    llm._down.clear()
+    out = asyncio.run(llm.chat_chain([gpu, cpu], [{"role": "user", "content": "x"}]))
+    assert out["content"].startswith("{") and seen == [gpu.base_url, cpu.base_url]
+    asyncio.run(llm.chat_chain([gpu, cpu], [{"role": "user", "content": "x"}]))
+    assert seen[-1] == cpu.base_url and seen.count(gpu.base_url) == 1      # the GPU is skipped while it's down
+    llm._down.clear()

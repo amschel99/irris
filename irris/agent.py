@@ -162,10 +162,10 @@ class Turn:
                 frame = await camera_frame(self.db, ws_id, cam)
             if frame is None:
                 return {"error": "no live camera frame. Open Live on a phone or connect a camera."}
-            model = llm.resolve(self.ws, "vlm")
-            if not model.ready:
+            models = llm.chain(self.ws, "vlm")
+            if not models:
                 return {"error": "no vision model is set up (Settings → Models)"}
-            out = await vision.look(model, frame, str(args.get("question", "")))
+            out = await vision.look(models, frame, str(args.get("question", "")))
             n = self._cite({"record_id": f"camera:{cam or 'live'}", "title": "Camera", "type": "camera",
                             "source": "camera", "text": out["say"]})
             return {"cite": f"[{n}]", **out}
@@ -269,9 +269,9 @@ async def answer(db: Database, workspace: dict, message: str, *, conversation_id
     turn = Turn(db, workspace, user_id=user_id, camera_id=camera_id, frame=frame)
     started = time.time()
     tools_used: list[str] = []
-    model = llm.resolve(workspace, "llm")
+    models = llm.chain(workspace, "llm")
 
-    if not model.ready:
+    if not models:
         text = await _fallback(turn, message)
     else:
         msgs: list[dict] = [{"role": "system", "content": _system(db, workspace)}, *past,
@@ -280,7 +280,7 @@ async def answer(db: Database, workspace: dict, message: str, *, conversation_id
         text = ""
         for _ in range(MAX_STEPS):
             try:
-                reply = await llm.chat(model, msgs, tools, max_tokens=1500)
+                reply = await llm.chat_chain(models, msgs, tools, max_tokens=1500)
             except llm.ModelError as e:
                 text = f"I couldn't reach the reasoning model ({e}). " + await _fallback(turn, message)
                 break

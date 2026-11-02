@@ -1,6 +1,8 @@
 """The Irris server: the website at /, the dashboard at /app, the API at /api/v1, MCP at /mcp."""
 from __future__ import annotations
 
+import importlib
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
@@ -23,12 +25,41 @@ def _file(base: Path, rel: str) -> Path | None:
     return path if path.is_file() else None
 
 
+# Feature modules: each has a `router`, and may have `async startup()` / `async shutdown()` (background workers).
+FEATURES = ("api_knowledge", "api_media")
+
+
+def _features() -> list:
+    mods = []
+    for name in FEATURES:
+        try:
+            mods.append(importlib.import_module(f"irris.{name}"))
+        except ModuleNotFoundError as e:
+            if e.name != f"irris.{name}":
+                raise
+    return mods
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="Irris API", version="1.0", docs_url="/api/docs", redoc_url=None,
+    mods = _features()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        for m in mods:
+            if hasattr(m, "startup"):
+                await m.startup()
+        yield
+        for m in mods:
+            if hasattr(m, "shutdown"):
+                await m.shutdown()
+
+    app = FastAPI(title="Irris API", version="1.0", docs_url="/api/docs", redoc_url=None, lifespan=lifespan,
                   openapi_url="/api/v1/openapi.json",
                   description="The AI twin for manufacturing and engineering teams. See /developers.")
     app.include_router(api.router)
     app.include_router(mcp.router)
+    for m in mods:
+        app.include_router(m.router)
     get_db()   # create the schema before the first request
 
     @app.exception_handler(StarletteHTTPException)

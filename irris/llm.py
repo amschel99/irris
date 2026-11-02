@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import time
 from dataclasses import dataclass
 
 import httpx
@@ -44,6 +45,48 @@ def resolve(workspace: dict | None, kind: str) -> Model:
     return Model(base.rstrip("/"), key, model)
 
 
+def fallback(kind: str) -> Model:
+    """The server's own model, used when the primary one (e.g. a GPU box) is down: the CPU Ollama in the container."""
+    if kind == "vlm":
+        return Model(settings.vlm_fallback_base_url.rstrip("/"), "", settings.vlm_fallback_model)
+    return Model(settings.llm_fallback_base_url.rstrip("/"), settings.llm_fallback_api_key, settings.llm_fallback_model)
+
+
+def chain(workspace: dict | None, kind: str) -> list[Model]:
+    """Models to try in order: the workspace's or the server's primary model, then the server's fallback."""
+    out = [m for m in (resolve(workspace, kind), fallback(kind)) if m.ready]
+    return [m for i, m in enumerate(out) if m.base_url not in {o.base_url for o in out[:i]}]
+
+
+def available(workspace: dict | None, kind: str) -> bool:
+    return bool(chain(workspace, kind))
+
+
+_down: dict[str, float] = {}       # base_url -> time until which it's skipped
+DOWN_SECONDS = 60
+
+
+async def chat_chain(models: list[Model], messages: list[dict], tools: list[dict] | None = None, **kw) -> dict:
+    """chat() on the first model that answers. A model that can't be reached is skipped for a minute."""
+    if not models:
+        raise ModelError("no model is configured")
+    errors = []
+    for i, m in enumerate(models):
+        last = i == len(models) - 1
+        if not last and _down.get(m.base_url, 0) > time.time():
+            continue
+        try:
+            msg = await chat(m, messages, tools, **kw)
+            _down.pop(m.base_url, None)
+            msg["_model"] = m.model
+            return msg
+        except ModelError as e:
+            errors.append(f"{m.model}: {e}")
+            if "unreachable" in str(e) or " 5" in str(e)[:16]:
+                _down[m.base_url] = time.time() + DOWN_SECONDS
+    raise ModelError("; ".join(errors))
+
+
 def _url(base: str) -> str:
     return base + ("/chat/completions" if re.search(r"/v\d+$", base) else "/v1/chat/completions")
 
@@ -59,7 +102,7 @@ async def chat(m: Model, messages: list[dict], tools: list[dict] | None = None, 
         body["response_format"] = {"type": "json_object"}
     headers = {"Authorization": f"Bearer {m.api_key}"} if m.api_key else {}
     try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5)) as client:
             r = await client.post(_url(m.base_url), json=body, headers=headers)
     except httpx.HTTPError as e:
         raise ModelError(f"model unreachable: {type(e).__name__}")

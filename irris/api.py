@@ -130,9 +130,9 @@ def workspace_api(ws: dict, role: str) -> dict:
             for k, v in models.items()}
     return {"id": ws["id"], "name": ws["name"], "industry": ws["industry"], "about": ws["about"],
             "instructions": ws["instructions"], "models": safe, "role": role, "created": ws["created"],
-            "defaults": {"llm": bool(llm.resolve(None, "llm").ready), "vlm": bool(llm.resolve(None, "vlm").ready),
-                         "llm_model": settings.llm_model if llm.resolve(None, "llm").ready else "",
-                         "vlm_model": settings.vlm_model if llm.resolve(None, "vlm").ready else ""}}
+            "defaults": {"llm": llm.available(None, "llm"), "vlm": llm.available(None, "vlm"),
+                         "llm_model": ", ".join(m.model for m in llm.chain(None, "llm")),
+                         "vlm_model": ", ".join(m.model for m in llm.chain(None, "vlm"))}}
 
 
 @router.get("/workspace")
@@ -545,8 +545,8 @@ async def draft_procedure(request: Request, c: Ctx = Depends(ctx)):
     goal = str(b.get("goal") or "").strip()
     if not goal:
         raise HTTPException(400, "describe the procedure")
-    model = llm.resolve(c.workspace, "llm")
-    if not model.ready:
+    models = llm.chain(c.workspace, "llm")
+    if not models:
         raise HTTPException(400, "drafting needs a reasoning model (Settings → Models)")
     hits = store.search(c.db, c.ws_id, goal, limit=6, types=["document", "lesson", "procedure"])
     ctx_text = "\n\n".join(f"[{h['title'] or h['type']}{', p. ' + str(h['page']) if h['page'] else ''}]\n{h['text'][:1200]}"
@@ -558,7 +558,7 @@ async def draft_procedure(request: Request, c: Ctx = Depends(ctx)):
               "they don't give (leave reading out instead).\n\nProcedure: " + goal +
               ("\n\nTeam documents:\n" + ctx_text if ctx_text else ""))
     try:
-        msg = await llm.chat(model, [{"role": "user", "content": prompt}], json_mode=True, max_tokens=2500)
+        msg = await llm.chat_chain(models, [{"role": "user", "content": prompt}], json_mode=True, max_tokens=2500)
     except llm.ModelError as e:
         raise HTTPException(502, str(e))
     out = llm.parse_json(msg.get("content") or "")
@@ -809,11 +809,11 @@ async def camera_look(camera_id: str, request: Request, c: Ctx = Depends(ctx)):
     frame = await agent.camera_frame(c.db, c.ws_id, camera_id)
     if frame is None:
         raise HTTPException(409, "no live frame from that camera")
-    model = llm.resolve(c.workspace, "vlm")
-    if not model.ready:
+    models = llm.chain(c.workspace, "vlm")
+    if not models:
         raise HTTPException(400, "no vision model is set up (Settings → Models)")
     try:
-        return await vision.look(model, frame, str(b.get("question") or "What do you see?"))
+        return await vision.look(models, frame, str(b.get("question") or "What do you see?"))
     except llm.ModelError as e:
         raise HTTPException(502, str(e))
 
@@ -888,7 +888,7 @@ def health():
     db = get_db()
     db.one("SELECT 1 AS ok")
     return {"ok": True, "database": "postgres" if db.pg else "sqlite", "version": "1.0",
-            "llm": llm.resolve(None, "llm").ready, "vlm": llm.resolve(None, "vlm").ready, "time": time.time()}
+            "llm": llm.available(None, "llm"), "vlm": llm.available(None, "vlm"), "time": time.time()}
 
 
 @router.get("/irf")

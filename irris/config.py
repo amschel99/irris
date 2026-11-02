@@ -40,6 +40,14 @@ class Settings:
     vlm_base_url: str = field(default_factory=lambda: _env("VLM_BASE_URL"))
     vlm_api_key: str = field(default_factory=lambda: _env("VLM_API_KEY"))
     vlm_model: str = field(default_factory=lambda: _env("VLM_MODEL", "qwen3.5:2b"))
+    # Fallbacks when the primary model can't be reached. In the Docker image a CPU Ollama runs next to the app
+    # (LOCAL_OLLAMA=1), so vision keeps working without a GPU, just slower.
+    vlm_fallback_base_url: str = field(default_factory=lambda: _env(
+        "VLM_FALLBACK_BASE_URL", "http://127.0.0.1:11434/v1" if _env("LOCAL_OLLAMA") == "1" else ""))
+    vlm_fallback_model: str = field(default_factory=lambda: _env("VLM_FALLBACK_MODEL", "qwen3.5:2b"))
+    llm_fallback_base_url: str = field(default_factory=lambda: _env("LLM_FALLBACK_BASE_URL"))
+    llm_fallback_api_key: str = field(default_factory=lambda: _env("LLM_FALLBACK_API_KEY"))
+    llm_fallback_model: str = field(default_factory=lambda: _env("LLM_FALLBACK_MODEL"))
     max_upload_mb: int = field(default_factory=lambda: int(_env("MAX_UPLOAD_MB", "50")))
     cookie_secure: bool = field(default_factory=lambda: _env("COOKIE_SECURE", "auto") != "false")
 
