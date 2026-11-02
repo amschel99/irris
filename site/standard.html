@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>IRF · The Irris Record Format</title>
+  <meta name="description" content="IRF is how anything gets into Irris: one small JSON envelope for a reading, a database row, a manual, a photo or an SOP. Send IRF, or send your data as it is.">
+  <meta name="theme-color" content="#0A0A0B">
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" data-tone="dark">
+    <a class="wordmark" href="/" aria-label="Irris home">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 11V5h6M21 5h6v6M27 21v6h-6M11 27H5v-6" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="3.4" fill="currentColor"/></svg>
+      Irris
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#sees">Product</a>
+      <a href="/standard.html" aria-current="page">Standard</a>
+      <a href="/developers">Developers</a>
+    </nav>
+    <div class="nav-end">
+      <a class="signin" href="/app/login">Sign in</a>
+      <button class="menu-btn" type="button" aria-expanded="false" aria-controls="sheet">Menu</button>
+    </div>
+  </header>
+
+  <div class="sheet" id="sheet" aria-hidden="true" role="dialog" aria-label="Menu">
+    <button class="close" type="button">Close</button>
+    <a href="/#sees">Product</a>
+    <a href="/standard.html">Standard</a>
+    <a href="/developers">Developers</a>
+    <a href="/app/login">Sign in</a>
+    <a href="/app/signup">Get started</a>
+  </div>
+
+  <main id="main">
+    <section class="panel" data-tone="dark" aria-labelledby="h-irf">
+      <canvas class="visual" data-scene="tokens" role="img" aria-label="Scattered pieces of plant data (a temperature, a part number, a batch, a page reference, a torque value) drift across the screen and are caught one by one in lime brackets."></canvas>
+      <div class="copy">
+        <p class="eyebrow">IRF 1.0 · The Irris Record Format</p>
+        <h1 id="h-irf">One envelope for any data</h1>
+        <p class="sub">A sensor reading, a PLC event, a Postgres row, a PDF manual, a photo, an SOP. Each becomes a record Irris can find, cite and reason with.</p>
+      </div>
+      <div></div>
+      <div class="actions">
+        <a class="btn primary" href="#envelope">Read the format</a>
+        <a class="btn ghost" href="/app/signup">Get started</a>
+      </div>
+    </section>
+
+    <section class="doc" id="envelope" data-tone="light" aria-labelledby="h-env">
+      <div class="wrap">
+        <p class="eyebrow">The envelope</p>
+        <h2 id="h-env">Two fields matter. The rest is up to you.</h2>
+        <p class="lede">A record needs a <code>type</code> and at least one of <code>text</code>, <code>data</code> or <code>title</code>. Your fields go in <code>data</code> exactly as they are. Nothing is renamed or dropped.</p>
+        <div class="split">
+          <div class="codebox">
+            <div class="codebar"><span class="label">application/json</span></div>
+<pre>{
+  <span class="k">"irf"</span>: <span class="v">"1.0"</span>,
+  <span class="k">"type"</span>: <span class="hl">"reading"</span>,
+  <span class="k">"source"</span>: <span class="v">"line-3/plc"</span>,
+  <span class="k">"id"</span>: <span class="v">"press-7-temp-2026-11-02T08:15:00Z"</span>,
+  <span class="k">"time"</span>: <span class="v">"2026-11-02T08:15:00Z"</span>,
+  <span class="k">"subject"</span>: <span class="v">"asset:press-7"</span>,
+  <span class="k">"title"</span>: <span class="v">"Press 7 platen temperature"</span>,
+  <span class="k">"text"</span>: <span class="v">"Platen at 182 C during cycle 4410"</span>,
+  <span class="k">"data"</span>: { <span class="k">"value"</span>: <span class="v">182.4</span>, <span class="k">"unit"</span>: <span class="v">"C"</span>, <span class="k">"cycle"</span>: <span class="v">4410</span> },
+  <span class="k">"units"</span>: { <span class="k">"value"</span>: <span class="v">"C"</span> },
+  <span class="k">"tags"</span>: [<span class="v">"thermal"</span>, <span class="v">"line-3"</span>],
+  <span class="k">"links"</span>: [{ <span class="k">"rel"</span>: <span class="v">"part_of"</span>, <span class="k">"to"</span>: <span class="v">"asset:line-3"</span> }]
+}</pre>
+          </div>
+          <dl class="fields">
+            <dt>type<span class="req">REQUIRED</span></dt><dd>What the record is. Any lowercase word works.</dd>
+            <dt>source</dt><dd>Where it came from, as a path: <code>erp/orders</code>, <code>line-3/plc</code>.</dd>
+            <dt>id</dt><dd>Your system's stable id. The same <code>source</code> and <code>id</code> again updates the record instead of duplicating it.</dd>
+            <dt>time</dt><dd>When it happened, in ISO 8601 or Unix seconds. Defaults to when Irris received it.</dd>
+            <dt>subject</dt><dd>What it's about, as <code>kind:name</code>. Records that share a subject are linked.</dd>
+            <dt>title, text</dt><dd>A short name, and human-readable content.</dd>
+            <dt>data</dt><dd>Any JSON. Your fields, as they are.</dd>
+            <dt>units, tags, links</dt><dd>Units for fields in <code>data</code>, free labels, and relations to other subjects.</dd>
+          </dl>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc" data-tone="light" aria-labelledby="h-types">
+      <div class="wrap">
+        <p class="eyebrow">Types</p>
+        <h2 id="h-types">Some types get special handling</h2>
+        <p class="lede">Any other type, like <code>work_order</code>, <code>quality_check</code> or <code>shipment</code>, is stored, indexed and searchable as it is.</p>
+        <table class="spec">
+          <thead><tr><th scope="col">type</th><th scope="col">What Irris does with it</th></tr></thead>
+          <tbody>
+            <tr><td>document</td><td>Splits the text into passages, so answers cite the exact part and page.</td></tr>
+            <tr><td>reading</td><td>A measurement of the subject. Charted, and checked against limits.</td></tr>
+            <tr><td>event</td><td>An alarm, fault, stop or state change. Shown on the timeline.</td></tr>
+            <tr><td>procedure</td><td>An SOP. Its steps, checks and limits become a guided procedure on the camera.</td></tr>
+            <tr><td>asset</td><td>A machine, line, tool or instrument that other records point at.</td></tr>
+            <tr><td>lesson</td><td>A correction or rule your team taught Irris. Always considered when it answers.</td></tr>
+            <tr><td>row</td><td>A table row from a connected database or a CSV. The columns go in <code>data</code>.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc dark" data-tone="dark" aria-labelledby="h-send">
+      <div class="wrap">
+        <p class="eyebrow">Getting data in</p>
+        <h2 id="h-send">Send IRF. Or send what you have.</h2>
+        <p class="lede">You don't have to convert anything first. Anything that isn't IRF is wrapped in IRF for you.</p>
+        <table class="spec">
+          <thead><tr><th scope="col">Channel</th><th scope="col">What you send</th></tr></thead>
+          <tbody>
+            <tr><td>POST /api/v1/ingest</td><td>One record, a list of records, or newline-delimited records for streams and big batches.</td></tr>
+            <tr><td>Any JSON</td><td>Any object or array, with <code>?type=</code> and <code>?source=</code>. Each object becomes a record.</td></tr>
+            <tr><td>Files</td><td>PDF, Word, Excel, CSV, JSON, Markdown, text and images. Documents are split into passages; spreadsheet rows become rows.</td></tr>
+            <tr><td>Postgres</td><td>A read-only connection string. Chosen tables sync, and the assistant can query live.</td></tr>
+            <tr><td>Webhook</td><td>Any JSON from any system, to a URL that carries its own secret.</td></tr>
+            <tr><td>MCP</td><td>Records from an AI agent, through the <code>ingest</code> tool.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc" data-tone="light" aria-labelledby="h-norm">
+      <div class="wrap">
+        <p class="eyebrow">Normalisation</p>
+        <h2 id="h-norm">What happens when it arrives</h2>
+        <ol class="steps-big">
+          <li>Anything that isn't IRF is wrapped: its type is the <code>type</code> you passed, or <code>row</code>, and the value goes in <code>data</code>.</li>
+          <li>Time becomes UTC, the type becomes lowercase, and unknown top-level fields move into <code>data</code>.</li>
+          <li>The record gets a searchable body from its title, text, subject, tags and every field in <code>data</code>.</li>
+          <li>A record with an existing <code>source</code> and <code>id</code> replaces the old one.</li>
+        </ol>
+        <p class="lede">The original payload is always kept, unchanged.</p>
+        <div class="actions">
+          <a class="btn primary" href="/app/signup">Send your first record</a>
+          <a class="btn ghost" href="/developers">Developer docs</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot" style="padding: 32px var(--gutter); background: var(--paper); color: var(--mist-strong);" data-tone="light">
+    <span>Irris © 2026</span>
+    <a href="/">Home</a>
+    <a href="/developers">Developers</a>
+    <a href="/app/login">Sign in</a>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

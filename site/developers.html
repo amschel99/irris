@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Irris Developers</title>
+  <meta name="description" content="The Irris API and MCP server: send any data, ask questions with citations, run guided procedures and read cameras from your own code and AI agents.">
+  <meta name="theme-color" content="#0A0A0B">
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/assets/site.css">
+  <style>
+    .dev-hero { padding: calc(var(--nav-h) + clamp(56px, 12vh, 128px)) var(--gutter) clamp(56px, 10vh, 112px); background: var(--ink); color: var(--paper); }
+    .dev-hero .wrap { max-width: 1120px; margin: 0 auto; }
+    .dev-hero h1 { font-size: clamp(40px, 6vw, 76px); letter-spacing: -0.03em; line-height: 1; margin: 0; font-weight: 500; }
+    .dev-hero .sub { margin: 18px 0 0; text-align: left; max-width: 36em; }
+    .toc { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 40px; font: 500 12px/1 var(--mono); letter-spacing: 0.1em; text-transform: uppercase; }
+    .toc a { color: var(--mist); text-decoration: none; }
+    .toc a:hover, .toc a:focus-visible { color: var(--lime); }
+    pre.code { margin: 28px 0 0; padding: 20px 22px; background: var(--ink); color: var(--paper); border-radius: 6px; overflow-x: auto;
+               font: 13px/1.65 var(--mono); tab-size: 2; }
+    pre.code .c { color: #77777d; }
+    pre.code .p { color: var(--lime); }
+    .doc.dark pre.code { background: #111113; border: 1px solid var(--line-dark); }
+    .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: clamp(20px, 3vw, 40px); }
+    .two h3 { font-size: 17px; margin: 40px 0 0; font-weight: 600; }
+    .doc h2 { margin: 0; }
+    @media (max-width: 860px) { .two { grid-template-columns: 1fr; } .spec td:first-child { white-space: normal; padding-right: 16px; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" data-tone="dark">
+    <a class="wordmark" href="/" aria-label="Irris home">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 11V5h6M21 5h6v6M27 21v6h-6M11 27H5v-6" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="3.4" fill="currentColor"/></svg>
+      Irris
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="/#sees">Product</a>
+      <a href="/standard.html">Standard</a>
+      <a href="/developers" aria-current="page">Developers</a>
+    </nav>
+    <div class="nav-end">
+      <a class="signin" href="/app/login">Sign in</a>
+      <button class="menu-btn" type="button" aria-expanded="false" aria-controls="sheet">Menu</button>
+    </div>
+  </header>
+
+  <div class="sheet" id="sheet" aria-hidden="true" role="dialog" aria-label="Menu">
+    <button class="close" type="button">Close</button>
+    <a href="/#sees">Product</a>
+    <a href="/standard.html">Standard</a>
+    <a href="/developers">Developers</a>
+    <a href="/app/login">Sign in</a>
+    <a href="/app/signup">Get started</a>
+  </div>
+
+  <main id="main">
+    <section class="dev-hero" aria-labelledby="h-dev">
+      <div class="wrap">
+        <p class="eyebrow">Developers</p>
+        <h1 id="h-dev">Everything the dashboard does, your code can do.</h1>
+        <p class="sub">A REST API and an MCP server over the same workspace: send data, ask with citations, run procedures, read cameras.</p>
+        <nav class="toc" aria-label="On this page">
+          <a href="#start">Quick start</a><a href="#auth">Keys</a><a href="#ingest">Send data</a><a href="#ask">Ask</a>
+          <a href="#procedures">Procedures</a><a href="#cameras">Cameras</a><a href="#mcp">MCP</a><a href="#models">Models</a><a href="#reference">Reference</a>
+        </nav>
+      </div>
+    </section>
+
+    <section class="doc" id="start" data-tone="light" aria-labelledby="h-start">
+      <div class="wrap">
+        <p class="eyebrow">Quick start</p>
+        <h2 id="h-start">Three calls</h2>
+        <p class="lede">Create a key in the dashboard under <b>Settings → Developers</b>. Then send something and ask about it.</p>
+<pre class="code"><span class="c"># 1. send a reading (IRF)</span>
+curl https://YOUR-IRRIS/api/v1/ingest \
+  -H "Authorization: Bearer $IRRIS_KEY" -H "Content-Type: application/json" \
+  -d '{"type":"reading","source":"line-3/plc","subject":"asset:press-7",
+       "data":{"value":182.4,"unit":"C"}}'
+
+<span class="c"># 2. send a manual</span>
+curl https://YOUR-IRRIS/api/v1/ingest/file -H "Authorization: Bearer $IRRIS_KEY" -F file=@press7-manual.pdf
+
+<span class="c"># 3. ask</span>
+curl https://YOUR-IRRIS/api/v1/ask \
+  -H "Authorization: Bearer $IRRIS_KEY" -H "Content-Type: application/json" \
+  -d '{"message":"Is press 7 within its platen limits?"}'
+<span class="p">→ {"reply": "No. It read 182.4 C [1], above the 180 C hold limit on p. 14 of the manual [2].",
+   "sources": [{"n":1,"title":"…"},{"n":2,"title":"press7-manual.pdf","page":14}], "conversation_id": "…"}</span></pre>
+      </div>
+    </section>
+
+    <section class="doc dark" id="auth" data-tone="dark" aria-labelledby="h-auth">
+      <div class="wrap">
+        <p class="eyebrow">Authentication</p>
+        <h2 id="h-auth">One key per integration</h2>
+        <p class="lede">Keys start with <code>irr_</code> and belong to one workspace. Send <code>Authorization: Bearer irr_…</code> or <code>X-API-Key: irr_…</code>. Clients that can only take a URL may add <code>?key=irr_…</code>, but a key in a URL can end up in logs. Keys are shown once; delete one to revoke it.</p>
+      </div>
+    </section>
+
+    <section class="doc" id="ingest" data-tone="light" aria-labelledby="h-ingest">
+      <div class="wrap">
+        <p class="eyebrow">Send data</p>
+        <h2 id="h-ingest">Any data, one standard</h2>
+        <p class="lede">Records follow the <a href="/standard.html">Irris Record Format</a>. Send IRF when you can, and anything else as it is.</p>
+        <table class="spec">
+          <thead><tr><th>Call</th><th>What it takes</th></tr></thead>
+          <tbody>
+            <tr><td>POST /api/v1/ingest</td><td>One IRF record, a list, or <code>{"records": [...]}</code>. Up to 10,000 per call. Same <code>source</code> + <code>id</code> updates.</td></tr>
+            <tr><td>POST /api/v1/ingest?type=work_order&amp;source=erp</td><td>Any other JSON. Each object becomes one record of that type.</td></tr>
+            <tr><td>Content-Type: application/x-ndjson</td><td>One record per line, for streams and big batches.</td></tr>
+            <tr><td>POST /api/v1/ingest/file</td><td>PDF, Word, Excel, CSV, JSON, Markdown, text, images (multipart <code>file</code>). PDFs keep page numbers for citations.</td></tr>
+            <tr><td>POST /api/v1/hooks/{secret}</td><td>A webhook made in <b>Data → Webhooks</b>, for systems that can only POST. No key needed: the secret is in the URL.</td></tr>
+            <tr><td>Postgres</td><td>Connect in <b>Data → Databases</b>. Irris syncs the tables you pick and runs read-only queries live. Use a read-only database user.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc dark" id="ask" data-tone="dark" aria-labelledby="h-ask">
+      <div class="wrap">
+        <p class="eyebrow">Ask</p>
+        <h2 id="h-ask">Questions in, cited answers out</h2>
+        <p class="lede"><code>POST /api/v1/ask</code> with <code>{"message", "conversation_id"?, "camera_id"?, "run_id"?, "stream"?}</code>. Irris searches your records and documents, queries connected databases, looks through cameras and starts procedures on her own. Every fact in the reply carries a <code>[n]</code> that matches <code>sources</code>. With <code>"stream": true</code> the reply is Server-Sent Events: <code>tool</code> for each step, then <code>done</code>.</p>
+      </div>
+    </section>
+
+    <section class="doc" id="procedures" data-tone="light" aria-labelledby="h-proc">
+      <div class="wrap">
+        <p class="eyebrow">Procedures</p>
+        <h2 id="h-proc">SOPs that check themselves</h2>
+        <div class="two">
+          <div>
+            <p class="lede">A procedure is a list of steps. A step can say what correct looks like on camera (<code>check</code>) and the range a reading must fall in. A run walks through it: each step is checked through the camera or marked by hand, out-of-range readings fail, and the finished run writes a <code>batch_record</code>.</p>
+            <h3>Calls</h3>
+            <table class="spec" style="margin-top: 16px">
+              <tbody>
+                <tr><td>POST /api/v1/procedures</td><td>Create</td></tr>
+                <tr><td>POST /api/v1/runs</td><td><code>{"procedure_id", "camera_id"?, "label"?}</code></td></tr>
+                <tr><td>POST /api/v1/runs/{id}/check</td><td><code>{}</code> checks through the camera; <code>{"result": "pass", "reading": {"value": 180, "unit": "C"}}</code> marks it by hand</td></tr>
+                <tr><td>POST /api/v1/runs/{id}/back · /stop</td><td>Move back a step, or stop</td></tr>
+              </tbody>
+            </table>
+          </div>
+<pre class="code">{
+  "name": "Mould change, tool T-12",
+  "steps": [
+    { "instruction": "Lock out the press",
+      "check": "red LOTO tag on the main isolator" },
+    { "instruction": "Check the platen temperature",
+      "check": "the controller display is readable",
+      "reading": { "label": "platen", "min": 175,
+                   "max": 185, "unit": "C" } },
+    { "instruction": "Fit the mould",
+      "check": "all four clamps closed",
+      "caution": "two people to lift" }
+  ]
+}</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc dark" id="cameras" data-tone="dark" aria-labelledby="h-cam">
+      <div class="wrap">
+        <p class="eyebrow">Cameras</p>
+        <h2 id="h-cam">A phone, or the cameras you have</h2>
+        <table class="spec">
+          <tbody>
+            <tr><td>POST /api/v1/cameras {"kind": "phone"}</td><td>Returns a pairing link. Open it on any phone: it streams its back camera to Irris. No account on the phone.</td></tr>
+            <tr><td>POST /api/v1/cameras {"kind": "url", "url"}</td><td>An HTTP snapshot URL, an MJPEG stream, or RTSP (with OpenCV on the server). Irris grabs a frame when it needs one.</td></tr>
+            <tr><td>POST /api/v1/cam/frame?t={token}</td><td>Push your own JPEG frames for a paired camera, from any device or script.</td></tr>
+            <tr><td>GET /api/v1/cameras/{id}/frame.jpg</td><td>The latest frame.</td></tr>
+            <tr><td>POST /api/v1/cameras/{id}/look</td><td><code>{"question"}</code> → <code>{"say", "status", "reading"}</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="doc" id="mcp" data-tone="light" aria-labelledby="h-mcp">
+      <div class="wrap">
+        <p class="eyebrow">MCP</p>
+        <h2 id="h-mcp">Give your AI agents the plant</h2>
+        <p class="lede">Streamable HTTP at <code>/mcp</code>, stateless, JSON responses. Tools: <code>ask</code>, <code>ingest</code>, <code>search</code>, <code>records</code>, <code>databases</code>, <code>sql</code>, <code>look</code>, <code>cameras</code>, <code>procedures</code>, <code>start_run</code>, <code>run_status</code>, <code>check_step</code>, <code>remember</code>. Resources: <code>irris://irf</code> (the standard) and <code>irris://workspace</code>.</p>
+        <div class="two">
+<pre class="code"><span class="c">// Claude Desktop, Cursor, any MCP client</span>
+{
+  "mcpServers": {
+    "irris": {
+      "type": "http",
+      "url": "https://YOUR-IRRIS/mcp",
+      "headers": { "Authorization": "Bearer irr_…" }
+    }
+  }
+}</pre>
+<pre class="code"><span class="c"># Claude Code</span>
+claude mcp add --transport http irris \
+  https://YOUR-IRRIS/mcp \
+  --header "Authorization: Bearer $IRRIS_KEY"
+
+<span class="c"># clients that only take a URL</span>
+https://YOUR-IRRIS/mcp?key=irr_…</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="doc dark" id="models" data-tone="dark" aria-labelledby="h-models">
+      <div class="wrap">
+        <p class="eyebrow">Models</p>
+        <h2 id="h-models">Bring your own models</h2>
+        <p class="lede">Irris reasons with any OpenAI-compatible chat API that supports tool calling, and sees with any OpenAI-compatible API that takes images: Ollama or vLLM on your own GPU, or a hosted provider. Set them per workspace in <b>Settings → Models</b>. Keys are stored encrypted and never returned. Irris never pools workspaces or trains anything shared on your data. What reaches a hosted model follows that provider's terms, so run both models on your own GPU to keep everything in-house.</p>
+      </div>
+    </section>
+
+    <section class="doc" id="reference" data-tone="light" aria-labelledby="h-ref">
+      <div class="wrap">
+        <p class="eyebrow">Reference</p>
+        <h2 id="h-ref">Every endpoint</h2>
+        <p class="lede">The full OpenAPI reference, with every field, is at <a href="/api/docs">/api/docs</a> (spec: <a href="/api/v1/openapi.json">/api/v1/openapi.json</a>). A guide for LLMs is at <a href="/llms.txt">/llms.txt</a>.</p>
+        <div class="actions" style="justify-content: flex-start">
+          <a class="btn primary" href="/app/signup">Get a key</a>
+          <a class="btn ghost" href="/api/docs">API reference</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot" style="padding: 32px var(--gutter); background: var(--paper); color: var(--mist-strong);" data-tone="light">
+    <span>Irris © 2026</span>
+    <a href="/">Home</a>
+    <a href="/standard.html">Standard</a>
+    <a href="/app/login">Sign in</a>
+  </footer>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>

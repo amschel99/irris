@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Irris · The AI twin of your shop floor</title>
+  <meta name="description" content="Irris learns how your plant works, watches the work through a phone or factory camera, and guides every step against your SOP. API and MCP included.">
+  <meta name="theme-color" content="#0A0A0B">
+  <meta property="og:title" content="Irris · The AI twin of your shop floor">
+  <meta property="og:description" content="It sees the work, knows your plant and checks every step.">
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/assets/site.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="nav" data-tone="dark">
+    <a class="wordmark" href="/" aria-label="Irris home">
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 11V5h6M21 5h6v6M27 21v6h-6M11 27H5v-6" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="3.4" fill="currentColor"/></svg>
+      Irris
+    </a>
+    <nav class="nav-links" aria-label="Primary">
+      <a href="#sees">Product</a>
+      <a href="/standard.html">Standard</a>
+      <a href="/developers">Developers</a>
+    </nav>
+    <div class="nav-end">
+      <a class="signin" href="/app/login">Sign in</a>
+      <button class="menu-btn" type="button" aria-expanded="false" aria-controls="sheet">Menu</button>
+    </div>
+  </header>
+
+  <div class="sheet" id="sheet" aria-hidden="true" role="dialog" aria-label="Menu">
+    <button class="close" type="button">Close</button>
+    <a href="#sees">Product</a>
+    <a href="/standard.html">Standard</a>
+    <a href="/developers">Developers</a>
+    <a href="/app/login">Sign in</a>
+    <a href="/app/signup">Get started</a>
+  </div>
+
+  <main id="main">
+    <section class="panel" data-tone="dark" aria-labelledby="h-hero">
+      <canvas class="visual" data-scene="line" role="img" aria-label="A production line drawn in fine lines. Parts ride a conveyor under a camera, each one tracked by a lime box labelled with its part number and confidence; one is flagged as the wrong part."></canvas>
+      <div class="copy">
+        <h1 id="h-hero">The AI twin of your shop floor</h1>
+        <p class="sub">It sees the work, knows your plant and checks every step.</p>
+      </div>
+      <div></div>
+      <div class="actions">
+        <a class="btn primary" href="/app/signup">Get started</a>
+        <a class="btn ghost" href="#sees">See it work</a>
+      </div>
+    </section>
+
+    <section class="panel graphite" id="sees" data-tone="dark" aria-labelledby="h-sees">
+      <canvas class="visual" data-scene="gauge" role="img" aria-label="A phone camera view of an analog temperature gauge. Irris boxes the gauge, reads 182.4 degrees Celsius at 0.97 confidence, and says out loud: Platen at 182 degrees. In range."></canvas>
+      <div class="copy">
+        <p class="eyebrow">Camera guidance</p>
+        <h2 id="h-sees">It sees what you see</h2>
+        <p class="sub">Point a phone or any factory camera at the work. Irris reads the gauge, spots the wrong part and tells you in one sentence.</p>
+      </div>
+      <div></div>
+      <div class="actions">
+        <a class="btn primary" href="/app/signup">Get started</a>
+        <a class="btn ghost" href="/developers#cameras">Connect a camera</a>
+      </div>
+    </section>
+
+    <section class="panel" data-tone="light" aria-labelledby="h-knows">
+      <canvas class="visual" data-scene="knows" role="img" aria-label="Sources around a circle (a Postgres database, an SOP PDF, a PLC, ERP orders, a maintenance spreadsheet, a quality webhook, camera frames and team lessons) stream records into Irris at the centre. Each answer cites the source it came from."></canvas>
+      <div class="copy">
+        <p class="eyebrow">Your data</p>
+        <h2 id="h-knows">It knows your plant</h2>
+        <p class="sub">Connect Postgres, drop in manuals and SOPs, stream from any machine. Teach it once. Every answer cites its source.</p>
+      </div>
+      <div></div>
+      <div class="actions">
+        <a class="btn primary" href="/app/signup">Connect your data</a>
+        <a class="btn ghost" href="/standard.html">How data gets in</a>
+      </div>
+    </section>
+
+    <section class="panel bare" data-tone="dark" aria-labelledby="h-steps">
+      <div class="copy">
+        <p class="eyebrow">Procedures</p>
+        <h2 id="h-steps">Every step. Checked.</h2>
+        <p class="sub">Irris follows the SOP with you, flags a deviation the moment it happens and writes the batch record as you work.</p>
+      </div>
+      <div class="stage">
+        <div class="procedure" data-procedure>
+          <div>
+            <div class="pane-head"><span>SOP-114 · Cover assembly</span><span>Rev C</span></div>
+            <ol class="steps" aria-label="Procedure steps">
+              <li><span class="box" aria-hidden="true"></span><span>Isolate power and lock out</span><span class="state"></span></li>
+              <li><span class="box" aria-hidden="true"></span><span>Fit gasket G-12, lip facing out</span><span class="state"></span></li>
+              <li><span class="box" aria-hidden="true"></span><span>Place cover on the dowels</span><span class="state"></span></li>
+              <li><span class="box" aria-hidden="true"></span><span>Torque bolts to 12 N·m (11.5–12.5)</span><span class="state"></span></li>
+              <li><span class="box" aria-hidden="true"></span><span>Leak test at 2 bar for 60 s</span><span class="state"></span></li>
+              <li><span class="box" aria-hidden="true"></span><span>Label with the batch number</span><span class="state"></span></li>
+              <li><span class="box" aria-hidden="true"></span><span>Photograph and sign off</span><span class="state"></span></li>
+            </ol>
+          </div>
+          <div>
+            <div class="pane-head"><span>Batch record B-1042</span><span>Live</span></div>
+            <ul class="record" aria-label="Batch record entries"></ul>
+          </div>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="btn primary" href="/app/signup">Run a procedure</a>
+        <a class="btn ghost" href="/developers#procedures">Import your SOPs</a>
+      </div>
+    </section>
+
+    <section class="panel bare graphite" data-tone="dark" aria-labelledby="h-irf">
+      <div class="copy">
+        <p class="eyebrow">IRF 1.0</p>
+        <h2 id="h-irf">One standard for any data</h2>
+        <p class="sub">A reading, a database row, a manual. The same small envelope holds all of them. Send yours as it is.</p>
+      </div>
+      <div class="stage">
+        <div class="codebox" data-tabs data-auto>
+          <div class="codebar" role="tablist" aria-label="Record examples">
+            <button class="tab" role="tab" id="t-reading" aria-controls="p-reading">reading</button>
+            <button class="tab" role="tab" id="t-row" aria-controls="p-row">row</button>
+            <button class="tab" role="tab" id="t-doc" aria-controls="p-doc">document</button>
+            <span class="label" aria-hidden="true">POST /api/v1/ingest</span>
+          </div>
+<pre id="p-reading" role="tabpanel" aria-labelledby="t-reading">{
+  <span class="k">"type"</span>: <span class="hl">"reading"</span>,
+  <span class="k">"source"</span>: <span class="v">"line-3/plc"</span>,
+  <span class="k">"subject"</span>: <span class="v">"asset:press-7"</span>,
+  <span class="k">"time"</span>: <span class="v">"2026-11-02T08:15:00Z"</span>,
+  <span class="k">"data"</span>: { <span class="k">"value"</span>: <span class="v">182.4</span>, <span class="k">"unit"</span>: <span class="v">"C"</span>, <span class="k">"cycle"</span>: <span class="v">4410</span> }
+}</pre>
+<pre id="p-row" role="tabpanel" aria-labelledby="t-row" hidden>{
+  <span class="k">"type"</span>: <span class="hl">"row"</span>,
+  <span class="k">"source"</span>: <span class="v">"postgres://mes/work_orders"</span>,
+  <span class="k">"id"</span>: <span class="v">"WO-88213"</span>,
+  <span class="k">"subject"</span>: <span class="v">"batch:B-1042"</span>,
+  <span class="k">"data"</span>: { <span class="k">"status"</span>: <span class="v">"released"</span>, <span class="k">"qty"</span>: <span class="v">240</span>, <span class="k">"line"</span>: <span class="v">3</span> }
+}</pre>
+<pre id="p-doc" role="tabpanel" aria-labelledby="t-doc" hidden>{
+  <span class="k">"type"</span>: <span class="hl">"document"</span>,
+  <span class="k">"source"</span>: <span class="v">"upload"</span>,
+  <span class="k">"title"</span>: <span class="v">"SOP-114 Cover assembly"</span>,
+  <span class="k">"text"</span>: <span class="v">"4. Torque the six M8 bolts to 12 N·m…"</span>,
+  <span class="k">"data"</span>: { <span class="k">"page"</span>: <span class="v">3</span>, <span class="k">"rev"</span>: <span class="v">"C"</span> }
+}</pre>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="btn primary" href="/standard.html">Read the standard</a>
+        <a class="btn ghost" href="/app/signup">Get started</a>
+      </div>
+    </section>
+
+    <section class="panel bare" data-tone="light" aria-labelledby="h-dev">
+      <div class="copy">
+        <p class="eyebrow">API and MCP</p>
+        <h2 id="h-dev">Built for developers</h2>
+        <p class="sub">A REST API and an MCP server. Your agents get the same twin your team does.</p>
+      </div>
+      <div class="stage">
+        <div class="codebox" data-tabs>
+          <div class="codebar" role="tablist" aria-label="Integration examples">
+            <button class="tab" role="tab" id="t-rest" aria-controls="p-rest">REST</button>
+            <button class="tab" role="tab" id="t-mcp" aria-controls="p-mcp">MCP</button>
+            <span class="label" aria-hidden="true">irr_ key</span>
+          </div>
+<pre id="p-rest" role="tabpanel" aria-labelledby="t-rest"><span class="c"># Send anything</span>
+<span class="p">$</span> curl $IRRIS_URL/api/v1/ingest \
+    -H "Authorization: Bearer $IRRIS_KEY" \
+    -d '{"type":"event","subject":"asset:press-7","text":"E-stop on cycle 4410"}'
+
+<span class="c"># Ask about it</span>
+<span class="p">$</span> curl $IRRIS_URL/api/v1/ask \
+    -H "Authorization: Bearer $IRRIS_KEY" \
+    -d '{"message":"Why did press 7 stop this morning?"}'</pre>
+<pre id="p-mcp" role="tabpanel" aria-labelledby="t-mcp" hidden>{
+  <span class="k">"mcpServers"</span>: {
+    <span class="k">"irris"</span>: {
+      <span class="k">"type"</span>: <span class="v">"http"</span>,
+      <span class="k">"url"</span>: <span class="v">"https://&lt;your-irris&gt;/mcp"</span>,
+      <span class="k">"headers"</span>: { <span class="k">"Authorization"</span>: <span class="v">"Bearer &lt;IRRIS_KEY&gt;"</span> }
+    }
+  }
+}</pre>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="btn primary" href="/developers">Developer docs</a>
+        <a class="btn ghost" href="/app/signup">Get an API key</a>
+      </div>
+    </section>
+
+    <section class="panel" data-tone="dark" aria-labelledby="h-end">
+      <canvas class="visual" data-scene="quiet" role="img" aria-label="The production line again, quiet, seen from the end of the conveyor."></canvas>
+      <div class="copy">
+        <h2 id="h-end">Put a twin on the floor</h2>
+        <p class="sub">Create a workspace, connect a camera and run your first procedure today.</p>
+      </div>
+      <div></div>
+      <div>
+        <div class="actions">
+          <a class="btn primary" href="/app/signup">Get started</a>
+          <a class="btn ghost" href="/app/login">Sign in</a>
+        </div>
+        <footer class="foot">
+          <span>Irris © 2026</span>
+          <a href="/standard.html">Standard</a>
+          <a href="/developers">Developers</a>
+          <a href="/app/login">Sign in</a>
+        </footer>
+      </div>
+    </section>
+  </main>
+
+  <script src="/assets/site.js" defer></script>
+</body>
+</html>
