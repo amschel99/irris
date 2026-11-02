@@ -2,37 +2,35 @@ import { Database, Play, Plus, RefreshCw, Search, Trash2, Upload as UploadIcon, 
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { RecordDrawer } from "../components/RecordDrawer";
-import { Code, CopyButton, Empty, ErrorBox, Field, Head, Loading, Modal, Spinner, Tabs, TypeTag } from "../components/ui";
-import { del, get, patch, post, upload } from "../lib/api";
+import { DocList, DocumentViewer, UploadRow, type UploadItem } from "../components/Knowledge";
+import { Code, CopyButton, Empty, ErrorBox, Field, Head, Loading, Modal, Spinner, Tabs, Toggle, TypeTag } from "../components/ui";
+import { del, get, patch, post } from "../lib/api";
+import { uploadFile, type DocumentInfo } from "../lib/knowledge";
 import { useSession } from "../lib/session";
 import type { DataSource, Hit, RecordSummary } from "../lib/types";
-import { ago, clock, errText, useLoad } from "../lib/util";
+import { ago, clock, errText, useInterval, useLoad } from "../lib/util";
 
-type Tab = "upload" | "databases" | "api" | "records";
+type Tab = "upload" | "documents" | "databases" | "api" | "records";
 
-interface Item {
-  id: number;
-  name: string;
-  size: number;
-  progress: number;
-  status: "uploading" | "done" | "error";
-  message: string;
-}
-
-function UploadTab() {
-  const [items, setItems] = useState<Item[]>([]);
+function UploadTab({ onOpen }: { onOpen: (id: string) => void }) {
+  const [items, setItems] = useState<UploadItem[]>([]);
   const [over, setOver] = useState(false);
+  const [teach, setTeach] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const { workspace } = useSession();
+  const llmReady = !!(workspace?.defaults.llm || workspace?.models.llm?.base_url);
 
   const send = async (files: FileList | File[]) => {
     for (const file of Array.from(files)) {
-      const id = Date.now() + Math.random();
-      setItems((x) => [{ id, name: file.name, size: file.size, progress: 0, status: "uploading", message: "" }, ...x]);
-      const up = (p: Partial<Item>) => setItems((x) => x.map((i) => (i.id === id ? { ...i, ...p } : i)));
+      const key = Date.now() + Math.random();
+      setItems((x) => [{ key, name: file.name, size: file.size, progress: 0, status: "uploading", message: "" }, ...x]);
+      const up = (p: Partial<UploadItem>) => setItems((x) => x.map((i) => (i.key === key ? { ...i, ...p } : i)));
       try {
-        const res = await upload(file, (f) => up({ progress: f }));
-        const what = res.kind === "row" ? `${res.accepted} rows` : res.kind === "document" ? "document, indexed for search" : res.kind === "image" ? "image" : `${res.accepted} records`;
-        up({ status: "done", progress: 1, message: what + (res.updated ? ` (${res.updated} updated)` : "") });
+        const res = await uploadFile(file, (f) => up({ progress: f }), { teach });
+        const what = res.kind === "row" ? (res.status === "queued" ? "importing rows" : `${res.accepted.toLocaleString()} rows`)
+          : res.kind === "document" ? `${(res.pages || 0).toLocaleString()} pages, searchable` : res.kind === "image" ? "image" : `${res.accepted} records`;
+        up({ status: "done", progress: 1, message: what + (res.updated ? ` (${res.updated} updated)` : ""), jobId: res.job?.id,
+             recordId: res.kind === "document" ? res.record_id : undefined });
       } catch (e) {
         up({ status: "error", message: errText(e) });
       }
@@ -53,28 +51,46 @@ function UploadTab() {
       >
         <UploadIcon />
         <strong>Drop files here, or click to choose</strong>
-        <span>Manuals, SOPs and datasheets (PDF, Word, text, Markdown) · logs and exports (CSV, Excel, JSON, NDJSON) · photos</span>
+        <span>Manuals and books of any length (PDF, Word, text, Markdown) · logs and exports (CSV, Excel, JSON, NDJSON) · photos</span>
         <input ref={input} type="file" multiple hidden onChange={(e) => e.target.files && send(e.target.files)} />
+      </div>
+      <div className="row between wrap">
+        <div className="row" style={{ gap: 10 }}>
+          <Toggle on={teach} onChange={setTeach} label="Teach Irris: study every page" />
+          <span style={{ fontSize: 13, cursor: "pointer" }} onClick={() => setTeach(!teach)}>Teach Irris: study every page</span>
+        </div>
+        <span className="faint" style={{ fontSize: 12, maxWidth: 520 }}>
+          {llmReady
+            ? "Every document is read in full and searchable. Studying also turns each section into notes, key facts and limits, and a digest Irris checks first. Documents up to 300 pages are studied anyway."
+            : "Every document is read in full and searchable. Studying needs a reasoning model (Settings → Models)."}
+        </span>
       </div>
       {items.length > 0 && (
         <ul className="list">
-          {items.map((i) => (
-            <li key={i.id}>
-              <div className="grow stack sm">
-                <div className="row between">
-                  <span style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{i.name}</span>
-                  <span className="faint mono" style={{ fontSize: 12 }}>{(i.size / 1024).toFixed(0)} KB</span>
-                </div>
-                {i.status === "uploading" ? (
-                  <div className="bar"><i style={{ width: `${Math.round(i.progress * 100)}%` }} /></div>
-                ) : (
-                  <span className={i.status === "error" ? "red" : "muted"} style={{ fontSize: 13 }}>{i.status === "done" ? `✓ ${i.message}` : i.message}</span>
-                )}
-              </div>
-            </li>
-          ))}
+          {items.map((i) => <UploadRow key={i.key} item={i} onOpen={onOpen} />)}
         </ul>
       )}
+    </div>
+  );
+}
+
+function DocumentsTab({ onOpen }: { onOpen: (id: string) => void }) {
+  const { workspace } = useSession();
+  const [q, setQ] = useState("");
+  const { data, error, loading, reload } = useLoad<{ documents: DocumentInfo[] }>(() => get("/documents"), [workspace?.id]);
+  const busy = data?.documents.some((d) => d.status !== "indexed" || d.study === "studying" || d.study === "queued");
+  useInterval(reload, busy ? 3000 : null);
+  const docs = (data?.documents || []).filter((d) => !q || d.title.toLowerCase().includes(q.toLowerCase()));
+  return (
+    <div className="stack lg">
+      <div className="section-head" style={{ marginBottom: 0 }}>
+        <div><h2>Documents</h2><p>Every page of every document, readable and searchable. Open one to read it, search inside it, or see what Irris learned from it.</p></div>
+        {!!data?.documents.length && <input className="input" style={{ maxWidth: 240 }} value={q} onChange={(e) => setQ(e.target.value)} placeholder="Filter by title" aria-label="Filter documents" />}
+      </div>
+      {loading && !data && <Loading />}
+      <ErrorBox error={error} retry={reload} />
+      {data && !data.documents.length && <Empty title="No documents yet">Upload manuals, SOPs, datasheets or whole books. Irris reads every page, even a 4,000-page PDF.</Empty>}
+      {!!docs.length && <DocList docs={docs} onOpen={(d) => onOpen(d.id)} />}
     </div>
   );
 }
@@ -353,7 +369,7 @@ curl -X POST ${origin}/api/v1/ingest \\
   );
 }
 
-function RecordsTab() {
+function RecordsTab({ onOpenDoc }: { onOpenDoc: (id: string, page?: number | null, q?: string) => void }) {
   const { workspace } = useSession();
   const [q, setQ] = useState("");
   const [query, setQuery] = useState("");
@@ -397,7 +413,7 @@ function RecordsTab() {
         list.data.hits.length ? (
           <ul className="list">
             {list.data.hits.map((h, i) => (
-              <li key={i} className="clickable" style={{ alignItems: "flex-start", padding: "12px 8px" }} onClick={() => setOpen({ id: h.record_id, page: h.page, excerpt: h.text })}>
+              <li key={i} className="clickable" style={{ alignItems: "flex-start", padding: "12px 8px" }} onClick={() => (h.type === "document" ? onOpenDoc(h.record_id, h.page, query) : setOpen({ id: h.record_id, page: h.page, excerpt: h.text }))}>
                 <div className="grow stack sm">
                   <div className="row"><span style={{ fontWeight: 500 }}>{h.title || h.subject || h.type}</span>{h.page && <span className="tag">p. {h.page}</span>}</div>
                   <div className="muted" style={{ fontSize: 13, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{h.text}</div>
@@ -417,7 +433,7 @@ function RecordsTab() {
                 <thead><tr><th>Time</th><th>Type</th><th>Title or content</th><th>Subject</th><th>Source</th></tr></thead>
                 <tbody>
                   {list.data.records.map((r) => (
-                    <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => setOpen({ id: r.id })}>
+                    <tr key={r.id} style={{ cursor: "pointer" }} onClick={() => (r.type === "document" ? onOpenDoc(r.id) : setOpen({ id: r.id }))}>
                       <td className="mono nowrap faint">{clock(r.time)}</td>
                       <td><TypeTag type={r.type} /></td>
                       <td style={{ maxWidth: 420, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.title || r.preview}</td>
@@ -446,18 +462,21 @@ function RecordsTab() {
 export function Data() {
   const [params, setParams] = useSearchParams();
   const tab = (params.get("tab") as Tab) || "upload";
+  const [doc, setDoc] = useState<{ id: string; page?: number | null; q?: string } | null>(null);
   return (
     <div className="page">
-      <Head title="Data" sub="Everything Irris knows about your plant. Any format goes in; the Irris Record Format keeps it consistent." />
+      <Head title="Data" sub="Everything Irris knows about your operation. Any format and any size goes in; the Irris Record Format keeps it consistent." />
       <Tabs<Tab>
-        tabs={[{ id: "upload", label: "Upload" }, { id: "databases", label: "Databases" }, { id: "api", label: "Webhooks & API" }, { id: "records", label: "Records" }]}
+        tabs={[{ id: "upload", label: "Upload" }, { id: "documents", label: "Documents" }, { id: "databases", label: "Databases" }, { id: "api", label: "Webhooks & API" }, { id: "records", label: "Records" }]}
         value={tab}
         onChange={(t) => setParams({ tab: t })}
       />
-      {tab === "upload" && <UploadTab />}
+      {tab === "upload" && <UploadTab onOpen={(id) => setDoc({ id })} />}
+      {tab === "documents" && <DocumentsTab onOpen={(id) => setDoc({ id })} />}
       {tab === "databases" && <DatabasesTab />}
       {tab === "api" && <ApiTab />}
-      {tab === "records" && <RecordsTab />}
+      {tab === "records" && <RecordsTab onOpenDoc={(id, page, q) => setDoc({ id, page, q })} />}
+      {doc && <DocumentViewer id={doc.id} page={doc.page} query={doc.q} onClose={() => setDoc(null)} />}
     </div>
   );
 }

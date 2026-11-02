@@ -10,14 +10,14 @@ export function RecordDrawer({ id, page, excerpt, onClose, onDeleted }: {
   id: string; page?: number | null; excerpt?: string; onClose: () => void; onDeleted?: () => void;
 }) {
   const { toast } = useSession();
-  const virtual = id.startsWith("sql:") || id.startsWith("camera:");
+  const virtual = id.startsWith("sql:") || id.startsWith("camera:") || id.startsWith("stats:");
   const { data, error, loading } = useLoad<RecordFull | null>(() => (virtual ? Promise.resolve(null) : get(`/records/${id}`)), [id]);
 
   if (virtual) {
     return (
-      <Drawer title={<h2>{id.startsWith("sql:") ? "Database query" : "Camera"}</h2>} onClose={onClose}>
+      <Drawer title={<h2>{id.startsWith("sql:") ? "Database query" : id.startsWith("stats:") ? "Statistics" : "Camera"}</h2>} onClose={onClose}>
         <p className="muted" style={{ marginTop: 0 }}>
-          {id.startsWith("sql:") ? "Irris ran this read-only query on your connected database:" : "What Irris saw through the camera:"}
+          {id.startsWith("sql:") ? "Irris ran this read-only query on your connected database:" : id.startsWith("stats:") ? "Irris computed these numbers from your records:" : "What Irris saw through the camera:"}
         </p>
         <pre className="code" style={{ whiteSpace: "pre-wrap" }}>{excerpt}</pre>
       </Drawer>

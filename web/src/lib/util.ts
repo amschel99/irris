@@ -122,4 +122,10 @@ export const TOOL_LABEL: Record<string, string> = {
   start_run: "Starting a guided run",
   remember: "Saving a lesson",
   log: "Writing a record",
+  documents: "Checking the documents",
+  outline: "Opening the contents",
+  read: "Reading the document",
+  search_in: "Searching inside the document",
+  stats: "Running the numbers",
+  recall: "Remembering",
 };

@@ -5,8 +5,9 @@ import { copy } from "../lib/util";
 export function Mark({ size = 20 }: { size?: number }) {
   return (
     <svg viewBox="0 0 32 32" fill="none" width={size} height={size} aria-hidden="true">
-      <path d="M5 11V5h6M21 5h6v6M27 21v6h-6M11 27H5v-6" stroke="currentColor" strokeWidth="2.4" />
-      <circle cx="16" cy="16" r="3.4" fill="currentColor" />
+      <circle cx="12.5" cy="16" r="9" stroke="currentColor" strokeWidth="2.2" />
+      <circle cx="19.5" cy="16" r="9" stroke="currentColor" strokeWidth="2.2" />
+      <path d="M16 7.71A9 9 0 0 1 16 24.29A9 9 0 0 1 16 7.71Z" fill="var(--lime, #D7FF3D)" />
     </svg>
   );
 }

@@ -107,6 +107,7 @@ export interface RunStep extends Step {
   say: string;
   measured: Measured | null;
   checks: number;
+  snapshot?: string | null;
 }
 
 export interface RunLogEntry {
@@ -117,6 +118,10 @@ export interface RunLogEntry {
   by: string;
   note: string;
   time: number;
+  snapshot?: string | null;
+  model?: string;
+  where?: "gpu" | "cpu";
+  ms?: number;
 }
 
 export interface Run {
@@ -130,6 +135,7 @@ export interface Run {
   ended: number | null;
   steps: RunStep[];
   log: RunLogEntry[];
+  recordings?: { record_id: string; file_id: string; mime: string; size: number; step: number | null; created: number }[];
 }
 
 export interface RunSummary {

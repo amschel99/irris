@@ -8,3 +8,17 @@ pypdf==6.21.1
 python-docx==1.2.0
 openpyxl==3.1.5
 pillow==12.0.0
+
+# voice and vision (irris/voice.py, irris/perception.py): free CPU engines
+faster-whisper==1.2.1
+av==19.0.1
+kokoro-onnx==0.6.1
+piper-tts==1.8.0
+onnxruntime==1.31.1
+opencv-python-headless==5.0.0.93
+rapidocr-onnxruntime==1.4.4
+
+# knowledge (irris/docs.py, irris/embed.py): page-by-page PDF reading, CPU embeddings for semantic search
+pypdfium2==5.14.0
+numpy==2.5.4
+fastembed==0.9.1

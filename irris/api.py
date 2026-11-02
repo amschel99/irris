@@ -7,10 +7,10 @@ import json
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from irris import agent, auth, connectors, extract, irf, llm, runs, store, vision
+from irris import agent, auth, connectors, irf, llm, runs, store, vision
 from irris.auth import Ctx, ctx
 from irris.config import settings
 from irris.db import dumps, get_db, loads, new_id, now
@@ -265,37 +265,7 @@ async def ingest(request: Request, c: Ctx = Depends(ctx)):
     return ingest_payload(c.db, c.ws_id, payload, q.get("type", ""), q.get("source") or "api")
 
 
-@router.post("/ingest/file")
-async def ingest_file(file: UploadFile = File(...), source: str = "upload", c: Ctx = Depends(ctx)):
-    content = await file.read()
-    if len(content) > settings.max_upload_mb * 1024 * 1024:
-        raise HTTPException(413, f"the file is over {settings.max_upload_mb} MB")
-    name = file.filename or "file"
-    mime = file.content_type or "application/octet-stream"
-    fid = new_id()
-    c.db.execute("INSERT INTO files (id, workspace_id, name, mime, size, content, created) VALUES (?,?,?,?,?,?,?)",
-                 [fid, c.ws_id, name, mime, len(content), content, now()])
-    try:
-        items = await asyncio.to_thread(extract.extract, name, mime, content, file_id=fid, now=now(), source=source)
-    except irf.IRFError as e:
-        c.db.execute("DELETE FROM files WHERE id = ?", [fid])
-        raise HTTPException(422, str(e))
-    except Exception as e:  # noqa: BLE001 - corrupt files
-        c.db.execute("DELETE FROM files WHERE id = ?", [fid])
-        raise HTTPException(422, f"couldn't read {name}: {type(e).__name__}")
-    pages = {i: it.pages for i, it in enumerate(items) if it.pages}
-    res = store.write(c.db, c.ws_id, [it.record for it in items], pages)
-    return {"file_id": fid, "name": name, "accepted": len(items), **res,
-            "kind": items[0].record["type"] if items else None}
-
-
-@router.get("/files/{file_id}")
-def get_file(file_id: str, c: Ctx = Depends(ctx)):
-    row = c.db.one("SELECT name, mime, content FROM files WHERE id = ? AND workspace_id = ?", [file_id, c.ws_id])
-    if not row:
-        raise HTTPException(404, "file not found")
-    return Response(bytes(row["content"]), media_type=row["mime"],
-                    headers={"Content-Disposition": f'inline; filename="{row["name"]}"'})
+# POST /ingest/file and GET /files/{id} live in api_knowledge.py (files of any size, read in the background).
 
 
 @router.post("/hooks/{secret}")

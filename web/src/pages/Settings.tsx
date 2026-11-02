@@ -1,12 +1,14 @@
-import { ExternalLink, KeyRound, Trash2, UserPlus } from "lucide-react";
+import { AudioLines, ExternalLink, KeyRound, Trash2, UserPlus } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Code, CopyButton, Empty, ErrorBox, Field, Head, Loading, Spinner, Tabs } from "../components/ui";
-import { del, get, patch, post } from "../lib/api";
+import { del, get, patch, post, put } from "../lib/api";
+import { useVisionStatus, type VoiceSettings } from "../lib/media";
+import { speaker } from "../lib/voice";
 import { useSession } from "../lib/session";
 import { ago, errText, useLoad } from "../lib/util";
 
-type Tab = "workspace" | "members" | "models" | "developers" | "account";
+type Tab = "workspace" | "members" | "models" | "voice" | "developers" | "account";
 
 function WorkspaceTab() {
   const { workspace, refreshWorkspace, refresh, toast, isAdmin } = useSession();
@@ -161,6 +163,173 @@ function ModelForm({ kind }: { kind: "llm" | "vlm" }) {
   );
 }
 
+function VisionPanel() {
+  const st = useVisionStatus(8000);
+  if (!st) return null;
+  const last = st.last;
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>Where vision runs now</h2>
+          <div className="faint" style={{ fontSize: 13 }}>Irris tries each model in order. When the first can't be reached, the next one takes over, and it switches back by itself.</div>
+        </div>
+        <span className={`tag ${st.ready ? (st.active?.where === "cpu" ? "amber" : "lime") : ""}`}>{!st.ready ? "off" : st.active?.where === "cpu" ? "cpu" : "gpu"}</span>
+      </div>
+      <div className="panel-body stack">
+        {!st.chain.length && <div className="muted">No vision model. Add one below, or deploy with the built-in CPU model.</div>}
+        <ol className="list" style={{ paddingLeft: 0 }}>
+          {st.chain.map((m, i) => (
+            <li key={i} style={{ gap: 10 }}>
+              <span className="mono faint" style={{ width: 18 }}>{i + 1}</span>
+              <span className="grow"><span className="mono">{m.model}</span> <span className="faint">· {m.source}</span></span>
+              <span className={`tag ${m.down ? "red" : m.where === "cpu" ? "amber" : "lime"}`}>{m.down ? "unreachable" : m.where === "cpu" ? "CPU" : "GPU"}</span>
+            </li>
+          ))}
+        </ol>
+        {last && (
+          <div className="faint mono" style={{ fontSize: 12 }}>
+            LAST {last.kind.toUpperCase()} · {last.model} ON {last.where.toUpperCase()} · {(last.ms / 1000).toFixed(1)} S{last.fallback ? " · FALLBACK" : ""}
+          </div>
+        )}
+        <div className="row wrap faint" style={{ fontSize: 12, gap: 14 }}>
+          <span className="engine"><span className={`dot ${st.perception.opencv ? "live" : "off"}`} /> Gauge reader (OpenCV)</span>
+          <span className="engine"><span className={`dot ${st.perception.ocr ? "live" : "off"}`} /> Display OCR</span>
+          {st.gate && st.gate.called + st.gate.skipped > 0 && <span className="engine mono">CHANGE GATE · {st.gate.skipped} OF {st.gate.called + st.gate.skipped} LOOKS SKIPPED (NOTHING MOVED)</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+const STT_LABEL: Record<string, string> = { default: "Free · Whisper on the server", openai: "OpenAI-compatible (OpenAI, Groq…)", deepgram: "Deepgram" };
+const TTS_LABEL: Record<string, string> = { default: "Free · Kokoro on the server", openai: "OpenAI-compatible (OpenAI, Groq Orpheus…)", elevenlabs: "ElevenLabs" };
+const PLACEHOLDERS: Record<string, { base: string; model: string; voice: string }> = {
+  "stt:openai": { base: "https://api.groq.com/openai/v1", model: "whisper-large-v3-turbo", voice: "" },
+  "stt:deepgram": { base: "", model: "nova-3", voice: "" },
+  "tts:openai": { base: "https://api.openai.com/v1", model: "gpt-4o-mini-tts", voice: "alloy" },
+  "tts:elevenlabs": { base: "", model: "eleven_flash_v2_5", voice: "21m00Tcm4TlvDq8ikWAM" },
+};
+
+function VoiceForm({ kind, data, onSaved }: { kind: "stt" | "tts"; data: VoiceSettings; onSaved: (v: VoiceSettings) => void }) {
+  const { toast, isAdmin } = useSession();
+  const cur = data[kind];
+  const [provider, setProvider] = useState(cur.provider || "default");
+  const [base, setBase] = useState(cur.base_url);
+  const [model, setModel] = useState(cur.model);
+  const [voiceId, setVoiceId] = useState(cur.voice);
+  const [key, setKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setProvider(cur.provider || "default"); setBase(cur.base_url); setModel(cur.model); setVoiceId(cur.voice); setKey(""); }, [cur.provider, cur.base_url, cur.model, cur.voice]);
+  const labels = kind === "stt" ? STT_LABEL : TTS_LABEL;
+  const premium = provider !== "default";
+  const save = async () => {
+    setBusy(true);
+    try {
+      const v = await put<VoiceSettings>("/voice/settings", { [kind]: { provider, base_url: base, model, voice: voiceId, api_key: key || undefined } });
+      onSaved(v);
+      setKey("");
+      toast("Saved");
+    } catch (e) {
+      toast(errText(e), true);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ph = PLACEHOLDERS[`${kind}:${provider}`] || { base: "", model: "", voice: "" };
+  const engines = kind === "stt"
+    ? [{ ok: data.status.stt.whisper, name: "Whisper small.en", loaded: data.status.stt.loaded }]
+    : [{ ok: data.status.tts.kokoro, name: "Kokoro", loaded: data.status.tts.loaded.includes("kokoro") }, { ok: data.status.tts.piper, name: "Piper (backup)", loaded: data.status.tts.loaded.includes("piper") }];
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <div>
+          <h2>{kind === "stt" ? "Listening" : "Speaking"}</h2>
+          <div className="faint" style={{ fontSize: 13 }}>{kind === "stt" ? "Turns what people say into text: the mic in Ask and hands-free Live." : "Irris's voice: replies, step instructions, verdicts and alerts."}</div>
+        </div>
+        <span className={`tag ${premium ? "" : "lime"}`}>{premium ? provider : "free"}</span>
+      </div>
+      <div className="panel-body stack">
+        <div className="row wrap" style={{ gap: 14 }}>
+          {engines.map((e) => <span key={e.name} className="engine"><span className={`dot ${e.ok ? "live" : "off"}`} /> {e.name}{e.ok ? (e.loaded ? " · loaded" : " · ready") : " · not installed"}</span>)}
+        </div>
+        {isAdmin && (
+          <>
+            <Field label="Provider">
+              <select className="select input" value={provider} onChange={(e) => setProvider(e.target.value)}>
+                {Object.entries(labels).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+              </select>
+            </Field>
+            {kind === "tts" && provider === "default" && (
+              <Field label="Voice">
+                <select className="select input" value={voiceId} onChange={(e) => setVoiceId(e.target.value)}>
+                  <option value="">Default (warm, American)</option>
+                  {data.voices.filter((v) => v.engine === "kokoro").map((v) => <option key={v.id} value={v.id}>{v.label}</option>)}
+                </select>
+              </Field>
+            )}
+            {premium && (
+              <>
+                <div className="grid2">
+                  {provider === "openai" && <Field label="Base URL"><input className="input mono" value={base} onChange={(e) => setBase(e.target.value)} placeholder={ph.base} spellCheck={false} /></Field>}
+                  <Field label="Model"><input className="input mono" value={model} onChange={(e) => setModel(e.target.value)} placeholder={ph.model} spellCheck={false} /></Field>
+                  {kind === "tts" && <Field label="Voice"><input className="input mono" value={voiceId} onChange={(e) => setVoiceId(e.target.value)} placeholder={ph.voice} spellCheck={false} /></Field>}
+                </div>
+                <Field label="API key" hint={cur.has_key && cur.provider === provider ? "A key is saved. Leave empty to keep it." : "Stored encrypted, never shown again."}>
+                  <input className="input mono" type="password" value={key} onChange={(e) => setKey(e.target.value)} placeholder={cur.has_key ? "••••••••" : "key"} autoComplete="off" />
+                </Field>
+                <div className="note">If {provider} fails (an expired key, an outage), Irris uses the free {kind === "stt" ? "Whisper" : "Kokoro"} engine for that request, so speech never stops.</div>
+              </>
+            )}
+            <div><button className="btn primary" onClick={save} disabled={busy}>{busy ? <Spinner /> : "Save"}</button></div>
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function VoiceTab() {
+  const { workspace, toast } = useSession();
+  const { data, error, loading, reload } = useLoad<VoiceSettings>(() => get("/voice/settings"), [workspace?.id]);
+  const [settings, setSettings] = useState<VoiceSettings | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [result, setResult] = useState<any>(null);
+  useEffect(() => { if (data) setSettings(data); }, [data]);
+  const test = async () => {
+    setTesting(true);
+    setResult(null);
+    try {
+      const r = await post("/voice/test", { text: "Irris is listening. Step three passed." });
+      setResult(r);
+      if (r.tts?.ok) speaker.say("Irris is listening. Step three passed.");
+    } catch (e) {
+      toast(errText(e), true);
+    } finally {
+      setTesting(false);
+    }
+  };
+  if (loading && !settings) return <Loading />;
+  if (error) return <ErrorBox error={error} retry={reload} />;
+  if (!settings) return null;
+  return (
+    <div className="stack lg" style={{ maxWidth: 820 }}>
+      <div className="row between wrap">
+        <p className="muted" style={{ margin: 0, maxWidth: 560 }}>Irris listens and speaks with free models on the server by default. Bring a paid provider for more natural voices or faster transcription; the free ones stay as the backup.</p>
+        <button className="btn" onClick={test} disabled={testing}>{testing ? <Spinner /> : <AudioLines />} Test speech</button>
+      </div>
+      {result && (
+        <div className="note mono" style={{ fontSize: 12, color: "var(--fg)" }}>
+          SPEAK · {result.tts.ok ? `${result.tts.engine.toUpperCase()} · ${(result.tts.ms / 1000).toFixed(1)} S${result.tts.note ? " · " + result.tts.note : ""}` : result.tts.error}<br />
+          LISTEN · {result.stt.ok ? `${result.stt.engine.toUpperCase()} · ${(result.stt.ms / 1000).toFixed(1)} S · “${result.stt.text}”${result.stt.note ? " · " + result.stt.note : ""}` : result.stt.error}
+        </div>
+      )}
+      <VoiceForm kind="tts" data={settings} onSaved={setSettings} />
+      <VoiceForm kind="stt" data={settings} onSaved={setSettings} />
+    </div>
+  );
+}
+
 function DevelopersTab() {
   const { workspace, isAdmin, toast } = useSession();
   const { data, reload } = useLoad<{ keys: { id: string; name: string; prefix: string; created: number; last_used: number | null }[] }>(() => get("/keys"), [workspace?.id]);
@@ -212,7 +381,7 @@ function DevelopersTab() {
         )}
       </section>
       <section className="stack">
-        <div><h2>MCP</h2><p className="muted" style={{ margin: "4px 0 0" }}>Connect Claude, Cursor or any MCP client to this workspace. Tools: ask, ingest, search, records, sql, look, procedures, start_run, check_step, cameras.</p></div>
+        <div><h2>MCP</h2><p className="muted" style={{ margin: "4px 0 0" }}>Connect Claude, Cursor or any MCP client to this workspace. Tools: ask, ingest, search, records, sql, look, procedures, start_run, check_step, cameras, snapshot, read_instrument, watch, what_happened, coach, speak.</p></div>
         <h3>Claude Code</h3>
         <Code>{`claude mcp add --transport http irris ${origin}/mcp --header "Authorization: Bearer ${key}"`}</Code>
         <h3>Claude Desktop, Cursor and other clients</h3>
@@ -261,13 +430,14 @@ export function Settings() {
     <div className="page">
       <Head title="Settings" />
       <Tabs<Tab>
-        tabs={[{ id: "workspace", label: "Workspace" }, { id: "members", label: "Members" }, { id: "models", label: "Models" }, { id: "developers", label: "Developers" }, { id: "account", label: "Account" }]}
+        tabs={[{ id: "workspace", label: "Workspace" }, { id: "members", label: "Members" }, { id: "models", label: "Models" }, { id: "voice", label: "Voice" }, { id: "developers", label: "Developers" }, { id: "account", label: "Account" }]}
         value={tab}
         onChange={(t) => setParams({ tab: t })}
       />
       {tab === "workspace" && <WorkspaceTab />}
       {tab === "members" && <MembersTab />}
-      {tab === "models" && <div className="stack lg" style={{ maxWidth: 820 }}><ModelForm kind="llm" /><ModelForm kind="vlm" /></div>}
+      {tab === "models" && <div className="stack lg" style={{ maxWidth: 820 }}><ModelForm kind="llm" /><VisionPanel /><ModelForm kind="vlm" /></div>}
+      {tab === "voice" && <VoiceTab />}
       {tab === "developers" && <DevelopersTab />}
       {tab === "account" && <AccountTab />}
     </div>

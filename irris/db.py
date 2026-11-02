@@ -74,7 +74,87 @@ CREATE TABLE IF NOT EXISTS messages (
   meta TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_conv ON messages (conversation_id, id);
 -- ==== knowledge: jobs, embeddings, memory (irris/jobs.py, irris/embed.py, irris/memory.py) ====
+CREATE TABLE IF NOT EXISTS jobs (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+  progress DOUBLE PRECISION NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '{}',
+  state TEXT NOT NULL DEFAULT '{}', result TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0, dedupe TEXT NOT NULL DEFAULT '', title TEXT NOT NULL DEFAULT '',
+  run_after DOUBLE PRECISION NOT NULL DEFAULT 0, locked_until DOUBLE PRECISION, created DOUBLE PRECISION NOT NULL,
+  updated DOUBLE PRECISION NOT NULL, started DOUBLE PRECISION, finished DOUBLE PRECISION);
+CREATE INDEX IF NOT EXISTS jobs_claim ON jobs (status, run_after);
+CREATE INDEX IF NOT EXISTS jobs_ws ON jobs (workspace_id, created);
+CREATE INDEX IF NOT EXISTS jobs_dedupe ON jobs (dedupe, status);
+CREATE TABLE IF NOT EXISTS stored_files (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL, size BIGINT NOT NULL,
+  path TEXT NOT NULL, sha256 TEXT NOT NULL DEFAULT '', created DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS doc_pages (
+  record_id TEXT NOT NULL, page INTEGER NOT NULL, workspace_id TEXT NOT NULL, text TEXT NOT NULL,
+  PRIMARY KEY (record_id, page));
+CREATE TABLE IF NOT EXISTS embeddings (
+  passage_id BIGINT PRIMARY KEY, workspace_id TEXT NOT NULL, record_id TEXT NOT NULL, model TEXT NOT NULL,
+  vec {BLOB} NOT NULL);
+CREATE INDEX IF NOT EXISTS embeddings_ws ON embeddings (workspace_id);
+CREATE INDEX IF NOT EXISTS embeddings_record ON embeddings (record_id);
+CREATE TABLE IF NOT EXISTS memory_items (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, user_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL,
+  text TEXT NOT NULL, norm TEXT NOT NULL, subject TEXT NOT NULL DEFAULT '', predicate TEXT NOT NULL DEFAULT '',
+  importance DOUBLE PRECISION NOT NULL DEFAULT 0.6, confidence DOUBLE PRECISION NOT NULL DEFAULT 0.8,
+  source_type TEXT NOT NULL DEFAULT 'agent_inferred', trust DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  source TEXT NOT NULL DEFAULT '', pinned INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'active',
+  evidence_ids TEXT NOT NULL DEFAULT '[]', superseded_by TEXT NOT NULL DEFAULT '', access_count INTEGER NOT NULL DEFAULT 0,
+  valid_from DOUBLE PRECISION NOT NULL, valid_to DOUBLE PRECISION, last_used DOUBLE PRECISION,
+  created DOUBLE PRECISION NOT NULL, updated DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS memory_items_ws ON memory_items (workspace_id, status, kind);
+CREATE INDEX IF NOT EXISTS memory_items_key ON memory_items (workspace_id, subject, predicate);
+CREATE TABLE IF NOT EXISTS memory_events (
+  id {SERIAL}, workspace_id TEXT NOT NULL, memory_id TEXT NOT NULL DEFAULT '', event TEXT NOT NULL,
+  actor TEXT NOT NULL DEFAULT '', detail TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS memory_events_ws ON memory_events (workspace_id, created);
+CREATE TABLE IF NOT EXISTS llm_calls (
+  id {SERIAL}, workspace_id TEXT NOT NULL, task TEXT NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL,
+  tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0, ms INTEGER NOT NULL DEFAULT 0,
+  ok INTEGER NOT NULL DEFAULT 1, error TEXT NOT NULL DEFAULT '', ref TEXT NOT NULL DEFAULT '',
+  created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS llm_calls_ws ON llm_calls (workspace_id, created);
+CREATE TABLE IF NOT EXISTS ws_limits (
+  workspace_id TEXT PRIMARY KEY, daily_tokens BIGINT, daily_calls INTEGER, updated DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS conv_summaries (
+  conversation_id TEXT PRIMARY KEY, summary TEXT NOT NULL, upto BIGINT NOT NULL, updated DOUBLE PRECISION NOT NULL);
 -- ==== media: voice, watch rules, video (irris/voice.py, irris/watch.py) ====
+CREATE TABLE IF NOT EXISTS media_settings (
+  workspace_id TEXT PRIMARY KEY, config TEXT NOT NULL DEFAULT '{}', updated DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS camera_state (
+  camera_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, goal TEXT NOT NULL DEFAULT '',
+  coach_s INTEGER NOT NULL DEFAULT 0, notice INTEGER NOT NULL DEFAULT 0, updated DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS watch_rules (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, camera_id TEXT NOT NULL, condition TEXT NOT NULL,
+  interval_s INTEGER NOT NULL, severity TEXT NOT NULL, speak INTEGER NOT NULL DEFAULT 0,
+  enabled INTEGER NOT NULL DEFAULT 1, cooldown_s INTEGER NOT NULL DEFAULT 300, last_check DOUBLE PRECISION,
+  last_match DOUBLE PRECISION, last_state INTEGER NOT NULL DEFAULT 0, last_say TEXT NOT NULL DEFAULT '',
+  checks INTEGER NOT NULL DEFAULT 0, matches INTEGER NOT NULL DEFAULT 0, created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS watch_rules_ws ON watch_rules (workspace_id);
+CREATE TABLE IF NOT EXISTS media_jobs (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
+  progress DOUBLE PRECISION NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '', params TEXT NOT NULL DEFAULT '{}',
+  result TEXT NOT NULL DEFAULT '{}', error TEXT NOT NULL DEFAULT '', created DOUBLE PRECISION NOT NULL,
+  updated DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS media_jobs_ws ON media_jobs (workspace_id, created);
+CREATE TABLE IF NOT EXISTS observations (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, camera_id TEXT NOT NULL DEFAULT '', t_start DOUBLE PRECISION NOT NULL,
+  t_end DOUBLE PRECISION NOT NULL, subject TEXT NOT NULL, relation TEXT NOT NULL, value TEXT NOT NULL DEFAULT '',
+  unit TEXT NOT NULL DEFAULT '', conf DOUBLE PRECISION NOT NULL DEFAULT 0.5, evidence TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '', n INTEGER NOT NULL DEFAULT 1);
+CREATE INDEX IF NOT EXISTS observations_ws_t ON observations (workspace_id, t_start);
+CREATE INDEX IF NOT EXISTS observations_cam ON observations (workspace_id, camera_id, subject, relation, t_end);
+CREATE TABLE IF NOT EXISTS camera_rois (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, camera_id TEXT NOT NULL, key TEXT NOT NULL,
+  box TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', updated DOUBLE PRECISION NOT NULL);
+CREATE UNIQUE INDEX IF NOT EXISTS camera_rois_key ON camera_rois (camera_id, key);
+CREATE TABLE IF NOT EXISTS shift_summaries (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, camera_id TEXT NOT NULL DEFAULT '', level INTEGER NOT NULL,
+  t_start DOUBLE PRECISION NOT NULL, t_end DOUBLE PRECISION NOT NULL, text TEXT NOT NULL,
+  merged INTEGER NOT NULL DEFAULT 0, created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS shift_summaries_cam ON shift_summaries (workspace_id, camera_id, level, merged);
 """
 
 PG_EXTRA = """
@@ -110,6 +190,10 @@ def loads(value: str | None, default: Any = None) -> Any:
         return json.loads(value)
     except (TypeError, ValueError):
         return default
+
+
+PASSAGE_COLS = ("p.id AS passage_id, p.record_id, p.ord, p.page, p.text AS passage, r.type, r.source, r.title, "
+                "r.subject, r.time")
 
 
 class Database:
@@ -208,7 +292,8 @@ class Database:
                 self._conn.executescript(ddl)
 
     # ---------------------------------------------------------------- full-text search
-    def search_passages(self, workspace_id: str, query: str, limit: int = 8, types: list[str] | None = None) -> list[dict]:
+    def search_passages(self, workspace_id: str, query: str, limit: int = 8, types: list[str] | None = None,
+                        record_id: str | None = None) -> list[dict]:
         terms = [t for t in "".join(c if c.isalnum() else " " for c in query.lower()).split() if len(t) > 1][:24]
         if not terms:
             return []
@@ -216,8 +301,10 @@ class Database:
         if types:
             type_sql = f" AND r.type IN ({','.join('?' * len(types))})"
             type_params = list(types)
-        cols = ("p.id AS passage_id, p.record_id, p.ord, p.page, p.text AS passage, r.type, r.source, r.title, "
-                "r.subject, r.time")
+        if record_id:
+            type_sql += " AND p.record_id = ?"
+            type_params.append(record_id)
+        cols = PASSAGE_COLS
         if self.pg:
             q = " | ".join(terms)
             return self.execute(

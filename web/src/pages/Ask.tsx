@@ -1,12 +1,14 @@
-import { ArrowUp, History, Plus, Square, Trash2 } from "lucide-react";
+import { ArrowUp, History, Plus, Square, Trash2, Volume2, VolumeX } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Answer } from "../components/Answer";
+import { MicButton } from "../components/media";
 import { Empty, ErrorBox, Spinner } from "../components/ui";
 import { askStream, del, get } from "../lib/api";
 import { useSession } from "../lib/session";
 import type { Message } from "../lib/types";
 import { ago, errText, TOOL_LABEL, useLoad } from "../lib/util";
+import { pref, setPref, speaker } from "../lib/voice";
 
 interface Conv {
   id: string;
@@ -64,7 +66,7 @@ export function useAsk() {
         },
       ]);
     }
-    return result as { conversation_id: string } | null;
+    return result as { conversation_id: string; reply: string } | null;
   }, []);
 
   const stop = () => abort.current?.abort();
@@ -82,8 +84,9 @@ export function Thinking({ steps }: { steps: string[] }) {
   );
 }
 
-export function Composer({ onSend, busy, onStop, placeholder, autoFocus }: { onSend: (t: string) => void; busy: boolean; onStop?: () => void; placeholder?: string; autoFocus?: boolean }) {
+export function Composer({ onSend, busy, onStop, placeholder, autoFocus, mic = true }: { onSend: (t: string) => void; busy: boolean; onStop?: () => void; placeholder?: string; autoFocus?: boolean; mic?: boolean }) {
   const [text, setText] = useState("");
+  const [partial, setPartial] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   const submit = () => {
     if (!text.trim() || busy) return;
@@ -97,6 +100,8 @@ export function Composer({ onSend, busy, onStop, placeholder, autoFocus }: { onS
     el.style.height = Math.min(200, el.scrollHeight) + "px";
   }, [text]);
   return (
+    <>
+    {partial && <div className="partial" aria-live="polite">{partial}…</div>}
     <div className="composer-inner">
       <textarea
         ref={ref}
@@ -113,12 +118,14 @@ export function Composer({ onSend, busy, onStop, placeholder, autoFocus }: { onS
           }
         }}
       />
+      {mic && !text.trim() && !busy && <MicButton onText={(t) => onSend(t)} onPartial={setPartial} label="Talk to Irris" />}
       {busy && onStop ? (
         <button className="btn icon" aria-label="Stop" onClick={onStop}><Square /></button>
       ) : (
-        <button className="btn primary icon" aria-label="Send" disabled={!text.trim() || busy} onClick={submit}><ArrowUp /></button>
+        (text.trim() || !mic) && <button className="btn primary icon" aria-label="Send" disabled={!text.trim() || busy} onClick={submit}><ArrowUp /></button>
       )}
     </div>
+    </>
   );
 }
 
@@ -132,6 +139,10 @@ export function AskPage() {
   const [loadingConv, setLoadingConv] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const started = useRef(false);
+  const [speak, setSpeak] = useState(() => pref("speakReplies", false));
+  const speakRef = useRef(speak);
+  speakRef.current = speak;
+  useEffect(() => () => speaker.stop(), []);
 
   useEffect(() => {
     if (!convId) {
@@ -156,7 +167,9 @@ export function AskPage() {
   }, [messages, pending]);
 
   const submit = async (text: string) => {
+    speaker.stop();
     const res = await send(text, {}, convId);
+    if (res?.reply && speakRef.current) speaker.say(res.reply);
     if (res?.conversation_id && res.conversation_id !== convId) {
       setParams({ c: res.conversation_id }, { replace: true });
     }
@@ -202,9 +215,20 @@ export function AskPage() {
       <section className="chat">
         <div className="chat-scroll" ref={scroller}>
           <div className="chat-inner">
-            <div className="mobile-show row between">
-              <button className="btn sm" onClick={() => setShowList((s) => !s)}><History /> Conversations</button>
-              <button className="btn sm ghost" onClick={() => setParams({})}><Plus /> New</button>
+            <div className="row between chat-tools">
+              <span className="mobile-show row" style={{ gap: 6 }}>
+                <button className="btn sm" onClick={() => setShowList((s) => !s)}><History /> Conversations</button>
+                <button className="btn sm ghost" onClick={() => setParams({})}><Plus /> New</button>
+              </span>
+              <span className="grow" />
+              <button
+                className={`btn sm${speak ? "" : " ghost"}`}
+                aria-pressed={speak}
+                onClick={() => { const v = !speak; setSpeak(v); setPref("speakReplies", v); if (!v) speaker.stop(); }}
+                title={speak ? "Irris reads her answers aloud" : "Answers are silent"}
+              >
+                {speak ? <Volume2 /> : <VolumeX />} <span className="desktop-only">{speak ? "Speaking replies" : "Speak replies"}</span>
+              </button>
             </div>
             {loadingConv && <div className="loading"><Spinner /> Loading…</div>}
             {!messages.length && !pending && !loadingConv && (

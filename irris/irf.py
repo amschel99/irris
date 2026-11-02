@@ -127,13 +127,17 @@ def _flatten(value: Any, prefix: str = "", depth: int = 0) -> list[str]:
     return [f"{prefix}: {value}"] if prefix else [str(value)]
 
 
+BOOKKEEPING = ("file_id", "file", "mime", "size", "status", "pages", "read", "unit", "outline", "teach", "study",
+               "digest_id", "empty_pages", "read_at")
+
+
 def body(rec: dict) -> str:
     """The searchable text of a record. Documents keep their text; structured records get `key: value` lines."""
     head = [p for p in (rec.get("title"), rec.get("subject") and f"subject: {rec['subject']}",
                         rec.get("tags") and f"tags: {', '.join(rec['tags'])}") if p]
     data = dict(rec.get("data") or {})
-    if rec.get("type") in ("document", "image"):      # file bookkeeping isn't content
-        for key in ("file_id", "file", "mime"):
+    if rec.get("type") in ("document", "image"):      # file and reading bookkeeping isn't content
+        for key in BOOKKEEPING:
             data.pop(key, None)
     if rec.get("type") == "procedure" and isinstance(data.get("steps"), list):
         steps = data.pop("steps")

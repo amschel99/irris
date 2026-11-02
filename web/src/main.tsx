@@ -1,6 +1,7 @@
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Link, Navigate, Route, Routes } from "react-router-dom";
+import { AlertCenter } from "./components/media";
 import { Shell } from "./components/Shell";
 import { Empty, Loading } from "./components/ui";
 import { SessionProvider, useSession } from "./lib/session";
@@ -16,6 +17,7 @@ import { RunDetail, Runs } from "./pages/Runs";
 import { Settings } from "./pages/Settings";
 import { Train } from "./pages/Train";
 import "./styles.css";
+import "./media.css";
 
 function Private({ children }: { children: ReactNode }) {
   const { ready, me, workspace } = useSession();
@@ -47,7 +49,7 @@ createRoot(document.getElementById("root")!).render(
           <Route path="/login" element={<Public><Login /></Public>} />
           <Route path="/signup" element={<Public><Signup /></Public>} />
           <Route path="/cam" element={<Cam />} />
-          <Route element={<Private><Shell /></Private>}>
+          <Route element={<Private><Shell /><AlertCenter /></Private>}>
             <Route index element={<Overview />} />
             <Route path="ask" element={<AskPage />} />
             <Route path="live" element={<Live />} />

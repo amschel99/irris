@@ -34,7 +34,8 @@ TOOLS: list[dict] = [
          "source": {"type": "string", "description": "default source (default mcp)"}}, "required": ["records"]}},
     *[{"name": t["name"], "description": t["description"], "inputSchema": t["parameters"]}
       for t in agent.TOOLS if t["name"] in ("search", "records", "databases", "sql", "look", "procedures",
-                                             "start_run", "remember")],
+                                             "start_run", "remember", "documents", "outline", "read", "search_in",
+                                             "stats", "recall")],
     {"name": "run_status", "description": "The state of a guided run: every step with its result and reading.",
      "inputSchema": {"type": "object", "properties": {"run_id": {"type": "string"}}, "required": ["run_id"]}},
     {"name": "check_step", "description": "Check the current step of a guided run through its camera, or mark it by "
@@ -46,6 +47,17 @@ TOOLS: list[dict] = [
     {"name": "cameras", "description": "The team's cameras and whether each is live.",
      "inputSchema": {"type": "object", "properties": {}}},
 ]
+
+
+def _media_tools() -> list[dict]:
+    try:
+        from irris.api_media import MCP_TOOLS
+        return MCP_TOOLS
+    except ImportError:
+        return []
+
+
+TOOLS += _media_tools()
 
 
 def _text(value: Any, error: bool = False) -> dict:
@@ -99,6 +111,9 @@ async def call_tool(c: auth.Ctx, name: str, args: dict) -> dict:
     if name in {t["name"] for t in agent.TOOLS}:
         result = await agent.Turn(c.db, c.workspace).call(name, args)
         return _text(result, isinstance(result, dict) and "error" in result)
+    from irris import api_media
+    if name in api_media.MCP_NAMES:
+        return await api_media.mcp_call(c, name, args)
     return _text(f"Unknown tool {name}", True)
 
 

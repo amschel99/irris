@@ -1,11 +1,13 @@
 import { ArrowRight, Check, CornerDownLeft, ScanLine, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { WorkingOn } from "../components/Knowledge";
 import { RecordDrawer } from "../components/RecordDrawer";
 import { Empty, ErrorBox, Loading, Sparkline, StatusTag, TypeTag } from "../components/ui";
 import { frameUrl, get } from "../lib/api";
 import { useSession } from "../lib/session";
 import type { Camera, RecordSummary, RunSummary } from "../lib/types";
+import type { Insight } from "../lib/knowledge";
 import { ago, clock, num, useInterval, useLoad } from "../lib/util";
 
 interface OverviewData {
@@ -50,8 +52,9 @@ export function Overview() {
   const [open, setOpen] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
   const { data, error, loading, reload } = useLoad<OverviewData>(() => get("/overview"), [workspace?.id]);
+  const insights = useLoad<{ insights: Insight[] }>(() => get("/insights"), [workspace?.id]);
   useInterval(() => setTick((t) => t + 1), data?.cameras.length ? 2500 : null);
-  useInterval(reload, 30000);
+  useInterval(() => { reload(); insights.reload(); }, 30000);
 
   const series = useMemo(() => {
     const by = new Map<string, { label: string; unit: string; values: number[]; last: number }>();
@@ -103,6 +106,8 @@ export function Overview() {
 
         {loading && !data && <Loading />}
         <ErrorBox error={error} retry={reload} />
+
+        <WorkingOn deps={[workspace?.id]} />
 
         {onboarding && (
           <section className="stack">
@@ -179,6 +184,24 @@ export function Overview() {
                 )}
               </section>
             </div>
+
+            {!!insights.data?.insights.length && (
+              <section className="stack">
+                <div className="row between"><h2>What Irris noticed</h2><span className="faint mono" style={{ fontSize: 12 }}>LAST 7 DAYS</span></div>
+                <ul className="insights">
+                  {insights.data.insights.slice(0, 6).map((i) => (
+                    <li key={i.id} className="clickable" style={{ cursor: "pointer" }} onClick={() => setOpen(i.id)}>
+                      <span className={`sev ${i.severity || ""}`} aria-hidden />
+                      <div>
+                        <div className="txt">{i.text}</div>
+                        <div className="faint mono" style={{ fontSize: 11, marginTop: 3 }}>{(i.kind || "").replace(/_/g, " ").toUpperCase()}</div>
+                      </div>
+                      <span className="when">{ago(i.time)}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             <section className="stack">
               <div className="row between"><h2>Latest in your data</h2><Link className="btn sm ghost" to="/data?tab=records">Browse <ArrowRight /></Link></div>

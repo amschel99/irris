@@ -27,9 +27,14 @@ def to_api(row: dict, full: bool = True) -> dict:
 
 def write(db: Database, workspace_id: str, records: list[dict],
           pages: dict[int, list[tuple[int | None, str]]] | None = None) -> dict:
-    """Store normalised records. Returns counts and the ids, in input order."""
+    """Store normalised records. Returns counts and the ids, in input order.
+
+    `pages` maps a record's position to its pages [(page number, text)]: documents keep them (doc_pages) so they
+    can be read page by page and cited by page.
+    """
     created = updated = 0
     ids = []
+    types = set()
     t = now()
     with db.transaction() as tx:
         for i, rec in enumerate(records):
@@ -43,6 +48,7 @@ def write(db: Database, workspace_id: str, records: list[dict],
                 rid = existing["id"]
                 tx.execute("UPDATE records SET type=?, source=?, ext_id=?, time=?, subject=?, title=?, text=?, data=?, "
                            "units=?, tags=?, links=?, updated=? WHERE id = ?", [*values, t, rid])
+                tx.execute("DELETE FROM embeddings WHERE record_id = ?", [rid])
                 tx.execute("DELETE FROM passages WHERE record_id = ?", [rid])
                 updated += 1
             else:
@@ -52,20 +58,64 @@ def write(db: Database, workspace_id: str, records: list[dict],
                            [rid, workspace_id, *values, t, t])
                 created += 1
             ids.append(rid)
-            _index(tx, workspace_id, rid, rec, (pages or {}).get(i))
+            types.add(rec["type"])
+            rec_pages = (pages or {}).get(i)
+            if rec_pages:
+                tx.execute("DELETE FROM doc_pages WHERE record_id = ?", [rid])
+                _index_pages(tx, workspace_id, rid, rec.get("title") or "", rec_pages)
+            else:
+                _index(tx, workspace_id, rid, rec)
+    if updated:
+        _embed_changed(workspace_id)
+    after_write(db, workspace_id, types)
     return {"created": created, "updated": updated, "ids": ids}
 
 
-def _index(tx, workspace_id: str, rid: str, rec: dict, pages: list[tuple[int | None, str]] | None) -> None:
-    head = "\n".join(p for p in (rec.get("title"), rec.get("subject")) if p)
-    if pages:
-        chunks = [(page, part) for page, text in pages for part in irf.chunk(text)]
-    else:
-        chunks = [(None, part) for part in irf.chunk(irf.body(rec))]
-    for ordinal, (page, part) in enumerate(chunks[:20_000]):
-        text = f"{head}\n{part}" if head and pages else part
+def _index(tx, workspace_id: str, rid: str, rec: dict) -> None:
+    for ordinal, part in enumerate(irf.chunk(irf.body(rec))[:20_000]):
         tx.execute("INSERT INTO passages (workspace_id, record_id, ord, page, text) VALUES (?,?,?,?,?)",
-                   [workspace_id, rid, ordinal, page, text])
+                   [workspace_id, rid, ordinal, None, part])
+
+
+def _index_pages(tx, workspace_id: str, rid: str, title: str, pages: list[tuple[int | None, str]]) -> None:
+    """Store pages and their passages. Idempotent per page, so a resumed reader can index a page again."""
+    for n, (page, text) in enumerate(pages):
+        page = page if page is not None else n + 1
+        tx.execute("DELETE FROM doc_pages WHERE record_id = ? AND page = ?", [rid, page])
+        tx.execute("INSERT INTO doc_pages (record_id, page, workspace_id, text) VALUES (?,?,?,?)",
+                   [rid, page, workspace_id, text])
+        tx.execute("DELETE FROM embeddings WHERE passage_id IN (SELECT id FROM passages WHERE record_id = ? AND page = ?)",
+                   [rid, page])
+        tx.execute("DELETE FROM passages WHERE record_id = ? AND page = ?", [rid, page])
+        for i, part in enumerate(irf.chunk(text)):
+            tx.execute("INSERT INTO passages (workspace_id, record_id, ord, page, text) VALUES (?,?,?,?,?)",
+                       [workspace_id, rid, page * 1000 + i, page, f"{title}\n{part}" if title else part])
+
+
+def index_pages(db: Database, workspace_id: str, record_id: str, title: str, pages: list[tuple[int, str]]) -> None:
+    """Add (or redo) some pages of a document that is being read."""
+    with db.transaction() as tx:
+        _index_pages(tx, workspace_id, record_id, title, pages)
+    _embed_changed(workspace_id)
+    after_write(db, workspace_id, {"document"})
+
+
+def _embed_changed(workspace_id: str) -> None:
+    from irris import embed
+    embed.bump(workspace_id)
+
+
+def after_write(db: Database, workspace_id: str, types: set[str]) -> None:
+    """Queue the follow-up work new records need: embeddings, and insights when readings arrive."""
+    from irris import jobs
+    try:
+        jobs.enqueue(db, workspace_id, "embed", {}, title="Understanding new data", dedupe=f"embed:{workspace_id}",
+                     while_running=True)
+        if "reading" in types:
+            jobs.enqueue(db, workspace_id, "insights", {}, title="Looking for anomalies",
+                         dedupe=f"insights:{workspace_id}", delay=30)
+    except Exception:  # noqa: BLE001 - follow-up work must never fail a write
+        pass
 
 
 def get(db: Database, workspace_id: str, record_id: str) -> dict:
@@ -79,8 +129,11 @@ def delete(db: Database, workspace_id: str, record_id: str) -> None:
     with db.transaction() as tx:
         if not tx.one("SELECT id FROM records WHERE id = ? AND workspace_id = ?", [record_id, workspace_id]):
             raise NotFound("record not found")
+        tx.execute("DELETE FROM embeddings WHERE record_id = ?", [record_id])
         tx.execute("DELETE FROM passages WHERE record_id = ?", [record_id])
+        tx.execute("DELETE FROM doc_pages WHERE record_id = ?", [record_id])
         tx.execute("DELETE FROM records WHERE id = ?", [record_id])
+    _embed_changed(workspace_id)
 
 
 def query(db: Database, workspace_id: str, *, type: str = "", subject: str = "", source: str = "",
@@ -107,16 +160,46 @@ def query(db: Database, workspace_id: str, *, type: str = "", subject: str = "",
     return {"total": total, "records": [to_api(r, full) for r in rows]}
 
 
-def search(db: Database, workspace_id: str, q: str, limit: int = 8, types: list[str] | None = None) -> list[dict]:
+def search(db: Database, workspace_id: str, q: str, limit: int = 8, types: list[str] | None = None,
+           record_id: str | None = None) -> list[dict]:
+    """Hybrid search: full-text and semantic (when embeddings are available), fused with reciprocal rank fusion."""
+    from irris import embed
+    from irris.db import PASSAGE_COLS
+    fts = db.search_passages(workspace_id, q, limit=limit * 4, types=types, record_id=record_id)
+    by_id = {h["passage_id"]: dict(h) for h in fts}
+    ranked = [h["passage_id"] for h in fts]
+    near = embed.nearest(db, workspace_id, q, k=limit * 6)
+    order = ranked
+    if near:
+        missing = [pid for pid, _ in near if pid not in by_id]
+        if missing:
+            marks = ",".join("?" * len(missing))
+            extra = db.execute(f"SELECT {PASSAGE_COLS}, 0 AS score FROM passages p JOIN records r ON r.id = p.record_id "
+                               f"WHERE p.id IN ({marks}) AND p.workspace_id = ?", [*missing, workspace_id])
+            for h in extra:
+                if (types and h["type"] not in types) or (record_id and h["record_id"] != record_id):
+                    continue
+                by_id[h["passage_id"]] = dict(h)
+        sims = dict(near)
+        semantic = [pid for pid, sim in near if pid in by_id and sim > 0.3]
+        order = embed.rrf(ranked, semantic)
+        for pid in order:
+            if pid in sims:
+                by_id[pid]["similarity"] = round(sims[pid], 3)
     hits, seen = [], {}
-    for h in db.search_passages(workspace_id, q, limit=limit * 3, types=types):
+    per_record = 8 if record_id else 2   # one big manual can't crowd out the rest
+    for pid in order:
+        h = by_id[pid]
         n = seen.get(h["record_id"], 0)
-        if n >= 2:          # at most two passages from one record, so one big manual can't crowd out the rest
+        if n >= per_record:
             continue
         seen[h["record_id"]] = n + 1
-        hits.append({"record_id": h["record_id"], "type": h["type"], "source": h["source"], "title": h["title"],
-                     "subject": h["subject"], "page": h["page"], "time": h["time"], "text": h["passage"],
-                     "score": round(float(h["score"] or 0), 4)})
+        hit = {"record_id": h["record_id"], "type": h["type"], "source": h["source"], "title": h["title"],
+               "subject": h["subject"], "page": h["page"], "time": h["time"], "text": h["passage"],
+               "score": round(float(h.get("score") or 0), 4)}
+        if "similarity" in h:
+            hit["similarity"] = h["similarity"]
+        hits.append(hit)
         if len(hits) >= limit:
             break
     return hits

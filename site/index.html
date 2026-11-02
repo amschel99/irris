@@ -19,7 +19,7 @@
 
   <header class="nav" data-tone="dark">
     <a class="wordmark" href="/" aria-label="Irris home">
-      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 11V5h6M21 5h6v6M27 21v6h-6M11 27H5v-6" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="3.4" fill="currentColor"/></svg>
+      <svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><circle cx="12.5" cy="16" r="9" stroke="currentColor" stroke-width="2.2"/><circle cx="19.5" cy="16" r="9" stroke="currentColor" stroke-width="2.2"/><path d="M16 7.71A9 9 0 0 1 16 24.29A9 9 0 0 1 16 7.71Z" fill="#D7FF3D"/></svg>
       Irris
     </a>
     <nav class="nav-links" aria-label="Primary">
@@ -44,7 +44,7 @@
 
   <main id="main">
     <section class="panel" data-tone="dark" aria-labelledby="h-hero">
-      <canvas class="visual" data-scene="line" role="img" aria-label="A production line drawn in fine lines. Parts ride a conveyor under a camera, each one tracked by a lime box labelled with its part number and confidence; one is flagged as the wrong part."></canvas>
+      <canvas class="visual" data-scene="breadboard" role="img" aria-label="A breadboard on a workbench, drawn in fine lines: a microcontroller chip, a crystal, resistors with colour bands, capacitors, blinking LEDs and jumper wires with current pulsing through them, wired to a dev board. Lime boxes lock onto each part with its name and confidence. Irris flags resistor R7 as 100 ohms where 10 kilohms is expected, then confirms it once the right resistor is fitted."></canvas>
       <div class="copy">
         <h1 id="h-hero">The AI twin of your shop floor</h1>
         <p class="sub">It sees the work, knows your plant and checks every step.</p>
@@ -57,7 +57,7 @@
     </section>
 
     <section class="panel graphite" id="sees" data-tone="dark" aria-labelledby="h-sees">
-      <canvas class="visual" data-scene="gauge" role="img" aria-label="A phone camera view of an analog temperature gauge. Irris boxes the gauge, reads 182.4 degrees Celsius at 0.97 confidence, and says out loud: Platen at 182 degrees. In range."></canvas>
+      <canvas class="visual" data-scene="engine" role="img" aria-label="A phone camera view of an inline four-cylinder engine in cutaway: the crankshaft turns, pistons and connecting rods pump, the cams open the valves in time and each cylinder fires in order. Irris boxes cylinder 3 and reads 182.4 degrees Celsius at 0.97 confidence, and watches a head bolt being torqued to 25 newton-metres, saying each step out loud."></canvas>
       <div class="copy">
         <p class="eyebrow">Camera guidance</p>
         <h2 id="h-sees">It sees what you see</h2>
@@ -71,7 +71,7 @@
     </section>
 
     <section class="panel" data-tone="light" aria-labelledby="h-knows">
-      <canvas class="visual" data-scene="knows" role="img" aria-label="Sources around a circle (a Postgres database, an SOP PDF, a PLC, ERP orders, a maintenance spreadsheet, a quality webhook, camera frames and team lessons) stream records into Irris at the centre. Each answer cites the source it came from."></canvas>
+      <canvas class="visual" data-scene="knows" role="img" aria-label="Cables run from a press, a PLC, a temperature probe, a camera, a Postgres database, an SOP PDF, a maintenance spreadsheet and an ERP server into the Irris mark at the centre, carrying records such as 182.4 degrees and work order WO-88213. Each answer cites the source it came from."></canvas>
       <div class="copy">
         <p class="eyebrow">Your data</p>
         <h2 id="h-knows">It knows your plant</h2>
@@ -105,6 +105,7 @@
             </ol>
           </div>
           <div>
+            <canvas class="inset" data-scene="bench" role="img" aria-label="A bench camera looking down on a cover plate: a gloved hand torques six bolts in a star pattern while Irris reads each one to 12.1 newton-metres."></canvas>
             <div class="pane-head"><span>Batch record B-1042</span><span>Live</span></div>
             <ul class="record" aria-label="Batch record entries"></ul>
           </div>
@@ -199,7 +200,7 @@
     </section>
 
     <section class="panel" data-tone="dark" aria-labelledby="h-end">
-      <canvas class="visual" data-scene="quiet" role="img" aria-label="The production line again, quiet, seen from the end of the conveyor."></canvas>
+      <canvas class="visual" data-scene="quiet" role="img" aria-label="The breadboard again, quiet, with current pulsing through its wires."></canvas>
       <div class="copy">
         <h2 id="h-end">Put a twin on the floor</h2>
         <p class="sub">Create a workspace, connect a camera and run your first procedure today.</p>

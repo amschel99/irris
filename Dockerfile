@@ -15,7 +15,7 @@ RUN npm run build
 FROM python:3.12-slim
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
- && apt-get install -y --no-install-recommends curl ca-certificates zstd tini libgomp1 \
+ && apt-get install -y --no-install-recommends curl ca-certificates zstd tini libgomp1 libgl1 libglib2.0-0 \
  && rm -rf /var/lib/apt/lists/*
 
 # Ollama (pinned, checksum-verified, CPU only: the GPU backends are removed)
@@ -38,10 +38,22 @@ RUN ollama serve >/tmp/ollama.log 2>&1 & pid=$!; \
     kill "$pid"; wait "$pid" 2>/dev/null || true; rm -f /tmp/ollama.log
 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    LOCAL_OLLAMA=1 HOST=0.0.0.0 PORT=8000
+    LOCAL_OLLAMA=1 HOST=0.0.0.0 PORT=8000 VOICE_MODELS_DIR=/srv/models FASTEMBED_CACHE=/opt/fastembed
 WORKDIR /srv
 COPY requirements.txt .
 RUN pip install -r requirements.txt
+
+# Free CPU models, baked in: Whisper (speech to text), Kokoro and Piper (voices), the search embedder, OCR
+RUN mkdir -p /srv/models/tts /srv/models/stt \
+ && K=https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0 \
+ && curl -fsSL -o /srv/models/tts/kokoro-v1.0.int8.onnx "$K/kokoro-v1.0.int8.onnx" \
+ && curl -fsSL -o /srv/models/tts/voices-v1.0.bin "$K/voices-v1.0.bin" \
+ && P=https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_GB/alba/medium \
+ && curl -fsSL -o /srv/models/tts/en_GB-alba-medium.onnx "$P/en_GB-alba-medium.onnx" \
+ && curl -fsSL -o /srv/models/tts/en_GB-alba-medium.onnx.json "$P/en_GB-alba-medium.onnx.json" \
+ && python -c "from faster_whisper import download_model; download_model('small.en', output_dir='/srv/models/stt/faster-whisper-small.en')" \
+ && python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5', cache_dir='/opt/fastembed')" \
+ && python -c "from rapidocr_onnxruntime import RapidOCR; RapidOCR()"
 COPY irris/ irris/
 COPY site/ site/
 COPY docs/ docs/

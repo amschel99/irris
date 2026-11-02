@@ -8,7 +8,8 @@ from pathlib import Path
 
 from irris import irf
 
-MAX_ROWS = 50_000
+MAX_ROWS = 50_000          # read in the request
+MAX_ROWS_JOB = 2_000_000   # read by a background job
 DOC_EXT = {".pdf", ".docx", ".txt", ".md", ".markdown", ".rst", ".log", ".html", ".htm", ".xml", ".yaml", ".yml"}
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
@@ -42,16 +43,16 @@ def _docx(content: bytes) -> str:
     return "\n".join(parts)
 
 
-def _rows_csv(content: bytes) -> list[dict]:
+def _rows_csv(content: bytes, max_rows: int = MAX_ROWS) -> list[dict]:
     text = content.decode("utf-8-sig", errors="replace")
     try:
         dialect = csv.Sniffer().sniff(text[:4096], delimiters=",;\t|")
     except csv.Error:
         dialect = csv.excel
-    return [dict(r) for _, r in zip(range(MAX_ROWS), csv.DictReader(io.StringIO(text), dialect=dialect))]
+    return [dict(r) for _, r in zip(range(max_rows), csv.DictReader(io.StringIO(text), dialect=dialect))]
 
 
-def _rows_xlsx(content: bytes) -> list[tuple[str, dict]]:
+def _rows_xlsx(content: bytes, max_rows: int = MAX_ROWS) -> list[tuple[str, dict]]:
     import openpyxl
     wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     out = []
@@ -62,7 +63,7 @@ def _rows_xlsx(content: bytes) -> list[tuple[str, dict]]:
             continue
         names = [str(h) if h not in (None, "") else f"col{i + 1}" for i, h in enumerate(header)]
         for row in rows:
-            if len(out) >= MAX_ROWS:
+            if len(out) >= max_rows:
                 break
             if any(v not in (None, "") for v in row):
                 out.append((ws.title, {n: (v.isoformat() if hasattr(v, "isoformat") else v) for n, v in zip(names, row)}))
@@ -79,7 +80,8 @@ def _cast(value):
         return value
 
 
-def extract(name: str, mime: str, content: bytes, *, file_id: str, now: float, source: str = "upload") -> list[Extracted]:
+def extract(name: str, mime: str, content: bytes, *, file_id: str, now: float, source: str = "upload",
+            max_rows: int = MAX_ROWS) -> list[Extracted]:
     ext = Path(name).suffix.lower()
     stem = Path(name).stem
     base = {"source": source, "title": name, "data": {"file_id": file_id, "file": name, "mime": mime}}
@@ -90,12 +92,12 @@ def extract(name: str, mime: str, content: bytes, *, file_id: str, now: float, s
     if ext == ".csv" or mime == "text/csv":
         return [Extracted(irf.normalize({"type": "row", "source": f"{source}/{stem}", "id": f"{file_id}:{i}",
                                          "data": {k: _cast(v) for k, v in row.items() if k}}, now=now))
-                for i, row in enumerate(_rows_csv(content))]
+                for i, row in enumerate(_rows_csv(content, max_rows))]
 
     if ext in (".xlsx", ".xlsm"):
         return [Extracted(irf.normalize({"type": "row", "source": f"{source}/{stem}/{sheet}", "id": f"{file_id}:{i}",
                                          "data": row}, now=now))
-                for i, (sheet, row) in enumerate(_rows_xlsx(content))]
+                for i, (sheet, row) in enumerate(_rows_xlsx(content, max_rows))]
 
     if ext in (".json", ".ndjson", ".jsonl") or mime in ("application/json", "application/x-ndjson"):
         text = content.decode("utf-8-sig", errors="replace")
