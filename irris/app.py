@@ -26,7 +26,7 @@ def _file(base: Path, rel: str) -> Path | None:
 
 
 # Feature modules: each has a `router`, and may have `async startup()` / `async shutdown()` (background workers).
-FEATURES = ("api_knowledge", "api_media")
+FEATURES = ("api_knowledge", "api_media", "api_mcp_sources")
 
 
 def _features() -> list:

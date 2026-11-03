@@ -67,6 +67,7 @@ Any other type (`work_order`, `quality_check`, `shipment`...) is stored, indexed
 | Connected Postgres (Sources → Postgres) | A read-only connection string | Chosen tables sync as `row` records, and the assistant can run read-only queries live. |
 | Webhook (Sources → Webhook) | Any JSON, from any system | The same as `POST /api/v1/ingest`, authenticated by the webhook's own secret in its URL. |
 | MCP tool `ingest` | Records from an AI agent | The same as `POST /api/v1/ingest`. |
+| Connected MCP server (Data → MCP servers) | Any MCP server's URL and token | Irris lists its tools; the assistant calls them live; a tool or resource can be pulled in once or on a schedule (every 5 min to daily). JSON results keep their shape (IRF if they are IRF, else one record per object); text becomes a document. |
 
 ## How Irris normalises what it receives
 

@@ -33,6 +33,8 @@ Resources: `irris://irf` (the data standard), `irris://workspace`.
 - `GET/POST /cameras`, `GET /cameras/{id}/frame.jpg`, `POST /cameras/{id}/look` {"question"}.
 - `GET/POST /lessons`, `GET /training/export` (JSONL for fine-tuning).
 - `GET/POST /sources` (postgres, webhook), `POST /sources/{id}/sync`, `POST /sources/{id}/query` {"sql"}.
+- `GET/POST /mcp-servers` {"url", "token"} (connect an external MCP server), `POST /mcp-servers/{id}/call`
+  {"tool"|"resource", "arguments", "save"?, "type"?}, `POST /mcp-servers/{id}/syncs` {"tool"|"resource", "every_minutes", "type"}.
 Full reference: /api/docs and /api/v1/openapi.json. The data standard: /api/v1/irf.
 
 ## Rules

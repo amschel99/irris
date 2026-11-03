@@ -2,6 +2,7 @@ import { Database, Play, Plus, RefreshCw, Search, Trash2, Upload as UploadIcon, 
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { RecordDrawer } from "../components/RecordDrawer";
+import { McpServersTab } from "../components/McpServers";
 import { DocList, DocumentViewer, UploadRow, type UploadItem } from "../components/Knowledge";
 import { Code, CopyButton, Empty, ErrorBox, Field, Head, Loading, Modal, Spinner, Tabs, Toggle, TypeTag } from "../components/ui";
 import { del, get, patch, post } from "../lib/api";
@@ -10,7 +11,7 @@ import { useSession } from "../lib/session";
 import type { DataSource, Hit, RecordSummary } from "../lib/types";
 import { ago, clock, errText, useInterval, useLoad } from "../lib/util";
 
-type Tab = "upload" | "documents" | "databases" | "api" | "records";
+type Tab = "upload" | "documents" | "databases" | "mcp" | "api" | "records";
 
 function UploadTab({ onOpen }: { onOpen: (id: string) => void }) {
   const [items, setItems] = useState<UploadItem[]>([]);
@@ -467,13 +468,14 @@ export function Data() {
     <div className="page">
       <Head title="Data" sub="Everything Irris knows about your operation. Any format and any size goes in; the Irris Record Format keeps it consistent." />
       <Tabs<Tab>
-        tabs={[{ id: "upload", label: "Upload" }, { id: "documents", label: "Documents" }, { id: "databases", label: "Databases" }, { id: "api", label: "Webhooks & API" }, { id: "records", label: "Records" }]}
+        tabs={[{ id: "upload", label: "Upload" }, { id: "documents", label: "Documents" }, { id: "databases", label: "Databases" }, { id: "mcp", label: "MCP servers" }, { id: "api", label: "Webhooks & API" }, { id: "records", label: "Records" }]}
         value={tab}
         onChange={(t) => setParams({ tab: t })}
       />
       {tab === "upload" && <UploadTab onOpen={(id) => setDoc({ id })} />}
       {tab === "documents" && <DocumentsTab onOpen={(id) => setDoc({ id })} />}
       {tab === "databases" && <DatabasesTab />}
+      {tab === "mcp" && <McpServersTab />}
       {tab === "api" && <ApiTab />}
       {tab === "records" && <RecordsTab onOpenDoc={(id, page, q) => setDoc({ id, page, q })} />}
       {doc && <DocumentViewer id={doc.id} page={doc.page} query={doc.q} onClose={() => setDoc(null)} />}
