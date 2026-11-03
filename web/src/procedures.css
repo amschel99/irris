@@ -1,0 +1,46 @@
+/* Guidance v2 in the procedure editor (camera checks, proposal diffs) and the run detail (statuses, votes, recovery). */
+
+.step-checks { border: 1px solid var(--line); border-radius: 8px; }
+.step-checks-head { display: flex; align-items: center; gap: 8px; width: 100%; background: none; border: 0; padding: 8px 10px;
+  color: var(--fg-2); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.step-checks-head .faint { margin-left: auto; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.step-checks-head .chev { transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1); flex: none; }
+.step-checks.open .chev { transform: rotate(180deg); }
+.step-checks-head:hover { color: var(--fg); }
+.step-checks-body { display: grid; gap: 10px; padding: 4px 10px 12px; border-top: 1px solid var(--line); }
+.sc-label { font-size: 12px; color: var(--fg-2); padding-top: 8px; }
+.q-row { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; }
+.q-row .must { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--fg-2); font-family: var(--mono); }
+.sc-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.sc-field { display: grid; gap: 4px; font-size: 12px; color: var(--fg-2); }
+.sc-field.check { display: flex; align-items: center; gap: 8px; padding-top: 18px; color: var(--fg); }
+.learned { font-size: 11px; }
+
+.proposal { display: grid; gap: 12px; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+.proposal h3 { margin: 0; font-size: 15px; font-weight: 500; }
+.proposal-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 12px; max-height: 50vh; overflow: auto; }
+.pl-step { font-size: 14px; margin-bottom: 4px; }
+.pl-field { display: grid; grid-template-columns: 130px 1fr 1fr; gap: 10px; font-size: 12px; padding: 4px 0; border-top: 1px dashed var(--line); }
+.pl-k { color: var(--fg-3); font-family: var(--mono); text-transform: uppercase; letter-spacing: .04em; font-size: 11px; padding-top: 1px; }
+.pl-from { color: var(--fg-3); text-decoration: line-through; }
+.pl-to { color: var(--fg); }
+
+.progress-bar { width: 72px; height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; display: inline-block; vertical-align: middle; }
+.progress-bar > i { display: block; height: 100%; background: var(--lime); }
+.votes { font-family: var(--mono); font-size: 11px; color: var(--fg-2); display: grid; gap: 2px; margin-top: 4px; }
+.votes .v-no { color: var(--red); }
+.evidence-note { font-size: 11px; color: var(--amber); font-family: var(--mono); margin-top: 2px; }
+tr.recovery-row td:first-child { box-shadow: inset 2px 0 0 var(--amber); }
+.recovery-card { border: 1px solid var(--line); border-left: 2px solid var(--amber); border-radius: 8px; padding: 14px 16px; display: grid; gap: 8px; }
+.recovery-card h3 { margin: 0; font-size: 15px; font-weight: 500; }
+.recovery-card ol { margin: 0; padding-left: 18px; }
+
+@media (max-width: 640px) {
+  .pl-field { grid-template-columns: 1fr; gap: 2px; }
+  .q-row { grid-template-columns: 1fr auto; }
+  .q-row .btn { grid-column: 2; }
+}
+
+/* grid children shrink instead of pushing the page wider on phones */
+.step-edit > * { min-width: 0; }
+.step-checks, .step-checks-body, .sc-field, .q-row > * { min-width: 0; }

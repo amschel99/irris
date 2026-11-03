@@ -509,6 +509,49 @@ def delete_procedure(proc_id: str, c: Ctx = Depends(ctx)):
     return {"deleted": proc_id}
 
 
+@router.post("/procedures/{proc_id}/draft-checks")
+async def draft_checks(proc_id: str, c: Ctx = Depends(ctx)):
+    """Yes/no camera questions, typical errors, kind, severity and reversibility for every step (a proposal: save it
+    with PUT /procedures/{id})."""
+    from irris import learning
+    try:
+        return await learning.draft_checks(c.db, c.workspace, proc_id)
+    except store.NotFound as e:
+        raise _err(e)
+    except llm.ModelError as e:
+        raise HTTPException(502 if "needs a reasoning model" not in str(e) else 400, str(e))
+
+
+@router.post("/procedures/{proc_id}/learn")
+async def learn_procedure(proc_id: str, c: Ctx = Depends(ctx)):
+    """Step order, typical durations and what "done" looks like, learned from the procedure's finished runs
+    (a proposal: save it with PUT /procedures/{id})."""
+    from irris import learning
+    try:
+        return await learning.learn(c.db, c.workspace, proc_id)
+    except store.NotFound as e:
+        raise _err(e)
+
+
+@router.patch("/procedures/{proc_id}/steps/{index}")
+async def patch_step(proc_id: str, index: int, request: Request, c: Ctx = Depends(ctx)):
+    """Partial update of one step (zones, instrument links, questions...)."""
+    b = await body_of(request)
+    try:
+        p = store.procedure(c.db, c.ws_id, proc_id)
+        if not 0 <= index < len(p["steps"]):
+            raise HTTPException(404, "no such step")
+        steps = [dict(s) for s in p["steps"]]
+        for k, v in b.items():
+            if v is None:
+                steps[index].pop(k, None)
+            else:
+                steps[index][k] = v
+        return store.save_procedure(c.db, c.ws_id, {**p, "steps": steps}, record_id=proc_id)
+    except (irf.IRFError, store.NotFound) as e:
+        raise _err(e)
+
+
 @router.post("/procedures/draft")
 async def draft_procedure(request: Request, c: Ctx = Depends(ctx)):
     """Draft an SOP from a description and the team's documents (the team edits it before saving)."""
@@ -832,27 +875,51 @@ async def check_run(run_id: str, request: Request, c: Ctx = Depends(ctx)):
                 reading = {"value": float(b["reading"]["value"]), "unit": str(b["reading"].get("unit") or ""),
                            "confidence": 1.0}
             state = runs.state(c.db, c.ws_id, run_id)
-            if reading and state["status"] == "active":
-                ok, why = vision.judge_reading(state["steps"][state["step"]], reading)
+            target = int(b["step"]) if b.get("step") is not None else state["step"]
+            if reading and state["status"] == "active" and 0 <= target < len(state["steps"]):
+                ok, why = vision.judge_reading(state["steps"][target], reading)
                 if ok is False and b["result"] == "pass":
                     b["result"], b["note"] = "fail", why
             by = c.user["email"] if c.user else "api"
-            return {"check": {"result": b["result"], "say": b.get("note") or "", "reading": reading},
-                    "run": runs.record(c.db, c.ws_id, run_id, str(b["result"]), say=str(b.get("note") or ""),
-                                       reading=reading, by=by, note=str(b.get("note") or ""))}
+            run = runs.record(c.db, c.ws_id, run_id, str(b["result"]), say=str(b.get("note") or ""),
+                              reading=reading, by=by, note=str(b.get("note") or ""),
+                              step=int(b["step"]) if b.get("step") is not None else None)
+            if run.get("recovery") is None and runs._wants_recovery(c.db, c.ws_id, run_id):
+                runs._schedule_recovery(c.db, c.workspace, run_id)
+            return {"check": {"result": b["result"], "say": b.get("note") or "", "reading": reading}, "run": run}
         state = runs.state(c.db, c.ws_id, run_id)
         cam = str(b.get("camera_id") or state["camera_id"] or "")
         frame = await agent.camera_frame(c.db, c.ws_id, cam)
         if frame is None:
             raise HTTPException(409, "no live camera frame to check. Start the camera first.")
         return await unless_gone(request, runs.vision_check(c.db, c.workspace, run_id, frame,
-                                                            scene=str(b.get("scene") or "")))
+                                                            scene=str(b.get("scene") or ""),
+                                                            step=int(b["step"]) if b.get("step") is not None else None,
+                                                            hands=b.get("hands")))
     except (store.NotFound, runs.RunError, ValueError) as e:
         raise _err(e)
     except vision.VisionTimeout as e:
         raise HTTPException(504, str(e))
     except llm.ModelError as e:
         raise HTTPException(502, str(e))
+
+
+@router.post("/runs/{run_id}/recover")
+async def recover_run(run_id: str, request: Request, c: Ctx = Depends(ctx)):
+    """{} or {"step", "error"}: propose a recovery plan (what happened, what it breaks, why, how to fix it).
+    {"accept": true}: insert the proposed recovery steps into the run (or reopen the step);
+    {"accept": false} or {"dismiss": true}: dismiss it."""
+    b = await body_of(request)
+    try:
+        if b.get("dismiss"):
+            return runs.accept_recovery(c.db, c.ws_id, run_id, accept=False)
+        if "accept" in b:
+            return runs.accept_recovery(c.db, c.ws_id, run_id, accept=bool(b["accept"]))
+        return await runs.propose_recovery(c.db, c.workspace, run_id,
+                                           step=int(b["step"]) if b.get("step") is not None else None,
+                                           error=str(b.get("error") or ""))
+    except (store.NotFound, runs.RunError, ValueError) as e:
+        raise _err(e)
 
 
 @router.post("/runs/{run_id}/{action}")

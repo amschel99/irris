@@ -1,11 +1,13 @@
-import { ArrowDown, ArrowUp, BookOpen, Check, Download, Pencil, Pin, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { ArrowDown, ArrowUp, BookOpen, Check, Download, GitBranch, Pencil, Pin, Plus, Sparkles, Trash2, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { DocList, DocumentViewer, UploadRow, type UploadItem } from "../components/Knowledge";
+import { ProposalReview, StepChecks } from "../components/StepChecks";
+import type { GuidedStep, Instrument, Proposal } from "../lib/guidanceTypes";
 import { Empty, ErrorBox, Field, Head, Loading, Modal, Spinner, Tabs } from "../components/ui";
 import { del, get, patch, post, put } from "../lib/api";
 import { useSession } from "../lib/session";
-import type { Procedure, Step } from "../lib/types";
+import type { Procedure } from "../lib/types";
 import { KIND_LABEL, SOURCE_LABEL, uploadFile, type DocumentInfo, type KnowledgeItem, type KnowledgeStatus, type Memory, type UsageToday } from "../lib/knowledge";
 import { ago, errText, num, useInterval, useLoad } from "../lib/util";
 
@@ -52,21 +54,30 @@ function TeamTab() {
   );
 }
 
-const blankStep = (): Step => ({ instruction: "" });
+const blankStep = (): GuidedStep => ({ instruction: "" });
+
+/** Keep "comes after" references right when steps move: map old indexes to new ones, dropping removed steps. */
+function remapPrereqs(steps: GuidedStep[], map: (i: number) => number | null): GuidedStep[] {
+  return steps.map((s) => (s.prereqs ? { ...s, prereqs: s.prereqs.map(map).filter((x): x is number => x !== null) } : s));
+}
 
 function ProcedureEditor({ initial, onClose, onSaved }: { initial: Partial<Procedure> | null; onClose: () => void; onSaved: () => void }) {
   const { toast, workspace } = useSession();
   const [name, setName] = useState(initial?.name || "");
   const [description, setDescription] = useState(initial?.description || "");
   const [subject, setSubject] = useState(initial?.subject || "");
-  const [steps, setSteps] = useState<Step[]>(initial?.steps?.length ? initial.steps : [blankStep()]);
+  const [steps, setSteps] = useState<GuidedStep[]>(initial?.steps?.length ? (initial.steps as GuidedStep[]) : [blankStep()]);
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
+  const [proposal, setProposal] = useState<{ title: string; data: Proposal } | null>(null);
+  const [proposing, setProposing] = useState<"" | "draft" | "learn">("");
+  useEffect(() => { get<{ instruments: Instrument[] }>("/instruments").then((r) => setInstruments(r.instruments)).catch(() => {}); }, []);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [draftGoal, setDraftGoal] = useState("");
   const [drafting, setDrafting] = useState(false);
   const llmReady = !!(workspace?.defaults.llm || workspace?.models.llm?.base_url);
 
-  const upd = (i: number, p: Partial<Step>) => setSteps((s) => s.map((x, j) => (j === i ? { ...x, ...p } : x)));
+  const upd = (i: number, p: Partial<GuidedStep>) => setSteps((s) => s.map((x, j) => (j === i ? { ...x, ...p } : x)));
   const updReading = (i: number, k: "label" | "min" | "max" | "unit", v: string) =>
     setSteps((s) => s.map((x, j) => {
       if (j !== i) return x;
@@ -80,8 +91,24 @@ function ProcedureEditor({ initial, onClose, onSaved }: { initial: Partial<Proce
     const j = i + d;
     if (j < 0 || j >= n.length) return s;
     [n[i], n[j]] = [n[j], n[i]];
-    return n;
+    return remapPrereqs(n, (k) => (k === i ? j : k === j ? i : k));
   });
+  const removeStep = (i: number) => setSteps((x) => x.length > 1
+    ? remapPrereqs(x.filter((_, j) => j !== i), (k) => (k === i ? null : k > i ? k - 1 : k)) : x);
+
+  const propose = async (kind: "draft" | "learn") => {
+    if (!initial?.id) return;
+    setProposing(kind);
+    setError("");
+    try {
+      const data = await post<Proposal>(`/procedures/${initial.id}/${kind === "draft" ? "draft-checks" : "learn"}`, {});
+      setProposal({ title: kind === "draft" ? "Checks drafted by Irris" : `Learned from ${data.runs ?? 0} finished runs`, data });
+    } catch (e) {
+      setError(errText(e));
+    } finally {
+      setProposing("");
+    }
+  };
 
   const draft = async () => {
     setDrafting(true);
@@ -136,6 +163,23 @@ function ProcedureEditor({ initial, onClose, onSaved }: { initial: Partial<Proce
           </div>
         </div>
       )}
+      {initial?.id && (
+        <div className="row wrap" style={{ gap: 8 }}>
+          <button type="button" className="btn sm" onClick={() => propose("draft")} disabled={!!proposing || !llmReady}
+            title={llmReady ? "Yes/no camera questions, typical mistakes and severity for every step" : "Needs a reasoning model"}>
+            {proposing === "draft" ? <Spinner /> : <Sparkles />} Draft checks with Irris
+          </button>
+          <button type="button" className="btn sm" onClick={() => propose("learn")} disabled={!!proposing}
+            title="Step order, typical times and what done looks like, from finished runs">
+            {proposing === "learn" ? <Spinner /> : <GitBranch />} Learn from runs
+          </button>
+          <span className="faint" style={{ fontSize: 12 }}>Both show a proposal first. Nothing changes until you apply and save.</span>
+        </div>
+      )}
+      {proposal && (
+        <ProposalReview title={proposal.title} proposal={proposal.data} onClose={() => setProposal(null)}
+          onApply={(next) => { setSteps(next); setProposal(null); toast("Applied. Review the steps, then save."); }} />
+      )}
       <form className="stack lg" onSubmit={save}>
         <div className="grid2">
           <Field label="Name"><input className="input" required value={name} onChange={(e) => setName(e.target.value)} placeholder="Mould change" /></Field>
@@ -157,11 +201,12 @@ function ProcedureEditor({ initial, onClose, onSaved }: { initial: Partial<Proce
                   <input className="input mono" inputMode="decimal" value={s.reading?.max ?? ""} onChange={(e) => updReading(i, "max", e.target.value)} placeholder="max" aria-label="Maximum" />
                   <input className="input mono" value={s.reading?.unit || ""} onChange={(e) => updReading(i, "unit", e.target.value)} placeholder="unit" aria-label="Unit" />
                 </div>
+                <StepChecks step={s} index={i} total={steps.length} instruments={instruments} onChange={(p) => upd(i, p)} />
               </div>
               <div className="row" style={{ alignItems: "flex-start", gap: 4 }}>
                 <button type="button" className="btn sm icon ghost" aria-label="Move up" onClick={() => moveStep(i, -1)} disabled={i === 0}><ArrowUp /></button>
                 <button type="button" className="btn sm icon ghost" aria-label="Move down" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1}><ArrowDown /></button>
-                <button type="button" className="btn sm icon ghost" aria-label="Remove step" onClick={() => setSteps((x) => x.length > 1 ? x.filter((_, j) => j !== i) : x)}><Trash2 /></button>
+                <button type="button" className="btn sm icon ghost" aria-label="Remove step" onClick={() => removeStep(i)}><Trash2 /></button>
               </div>
             </div>
           ))}

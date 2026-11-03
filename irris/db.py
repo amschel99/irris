@@ -155,6 +155,15 @@ CREATE TABLE IF NOT EXISTS shift_summaries (
   t_start DOUBLE PRECISION NOT NULL, t_end DOUBLE PRECISION NOT NULL, text TEXT NOT NULL,
   merged INTEGER NOT NULL DEFAULT 0, created DOUBLE PRECISION NOT NULL);
 CREATE INDEX IF NOT EXISTS shift_summaries_cam ON shift_summaries (workspace_id, camera_id, level, merged);
+-- guidance v2 (irris/guidance.py, irris/instruments.py)
+CREATE TABLE IF NOT EXISTS run_tracker (
+  run_id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT '{}',
+  updated DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS instruments (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, camera_id TEXT NOT NULL DEFAULT '', name TEXT NOT NULL,
+  type TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL,
+  updated DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS instruments_ws ON instruments (workspace_id);
 """
 
 PG_EXTRA = """

@@ -1,0 +1,103 @@
+/* Guidance v2 on the Live and phone screens: work zones, instruments, the checklist, recovery. */
+
+/* layers drawn in picture coordinates (the box the video actually fills) */
+.pic-layer { position: absolute; z-index: 3; pointer-events: none; }
+.pic-layer svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.pic-layer.edit { z-index: 6; pointer-events: auto; cursor: crosshair; touch-action: none; outline: 1px dashed rgba(215, 255, 61, 0.35); }
+.pic-layer.edit.still { cursor: default; }
+
+.zone { fill: rgba(215, 255, 61, 0.06); stroke: rgba(215, 255, 61, 0.85); stroke-width: 1.5; stroke-dasharray: 6 4;
+  transition: fill 160ms ease, stroke 160ms ease; }
+.zone.other { stroke: rgba(245, 245, 243, 0.45); fill: transparent; }
+.zone.warn { fill: rgba(255, 77, 61, 0.16); stroke: #FF4D3D; stroke-width: 2.5; stroke-dasharray: none; }
+.zone.editing { fill: rgba(215, 255, 61, 0.1); stroke: var(--lime); stroke-dasharray: none; }
+.zone-label { position: absolute; transform: translateY(-100%); margin-top: -3px; font: 500 10px var(--mono); letter-spacing: 0.06em;
+  color: var(--ink); background: var(--lime); padding: 1px 5px; border-radius: 2px; white-space: nowrap; }
+.zone-label.warn { background: #FF4D3D; color: #fff; }
+.zone-handle { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: var(--lime);
+  border: 2px solid #050506; box-shadow: 0 0 0 1px var(--lime); pointer-events: none; }
+
+.layer-bar { position: absolute; z-index: 7; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px;
+  background: rgba(5, 5, 6, 0.86); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border: 1px solid rgba(245, 245, 243, 0.14);
+  border-radius: 10px; padding: 8px 8px 8px 12px; color: var(--paper); max-width: calc(100% - 24px); flex-wrap: wrap; justify-content: center; }
+.layer-bar .mono { font-size: 11px; letter-spacing: 0.06em; color: var(--lime); }
+.layer-bar .hint { font-size: 12px; color: #A3A3A8; }
+.layer-bar .btn { color: var(--paper); border-color: rgba(245, 245, 243, 0.22); }
+.layer-bar .btn.primary { color: var(--ink); }
+
+/* instruments */
+.inst-box { position: absolute; border: 1.5px solid rgba(215, 255, 61, 0.9); border-radius: 3px; pointer-events: none; }
+.inst-box span { position: absolute; top: -17px; left: -1.5px; font: 500 10px var(--mono); letter-spacing: 0.06em; color: var(--ink);
+  background: var(--lime); padding: 1px 5px; border-radius: 2px; white-space: nowrap; }
+.inst-box.drawing { border-style: dashed; background: rgba(215, 255, 61, 0.08); }
+.calib-pt { position: absolute; width: 12px; height: 12px; margin: -6px 0 0 -6px; border-radius: 50%; border: 2px solid var(--lime); background: rgba(5, 5, 6, 0.6); }
+.calib-pt i { position: absolute; left: 14px; top: -3px; font: 500 10px var(--mono); font-style: normal; color: var(--lime); letter-spacing: 0.06em; }
+.calib-line { stroke: var(--lime); stroke-width: 1.5; stroke-dasharray: 3 3; }
+.inst-panel { position: absolute; z-index: 8; left: 16px; bottom: 16px; width: min(380px, calc(100% - 32px)); display: flex; flex-direction: column; gap: 12px;
+  background: var(--bg); color: var(--fg); border: 1px solid var(--line-2); border-radius: 12px; padding: 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45); animation: rise 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.inst-panel .row > * { flex: 1; min-width: 0; }
+.inst-panel .seg { width: 100%; }
+.inst-panel .seg button { flex: 1; }
+.seg button.on { background: var(--bg-3); color: var(--fg); }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+.inst-chip { pointer-events: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; max-width: 100%;
+  background: rgba(5, 5, 6, 0.82); border: 1px solid rgba(215, 255, 61, 0.55); border-radius: 8px; padding: 6px 6px 6px 10px; color: var(--paper); }
+.inst-chip .v { font-size: 13px; color: var(--lime); letter-spacing: 0.02em; }
+.inst-chip .m { font-size: 10px; color: #A3A3A8; letter-spacing: 0.06em; }
+.inst-chip .why { font-size: 12px; color: #C9C9C4; }
+.inst-chip.confirm { border-color: rgba(255, 181, 71, 0.7); }
+.inst-chip.confirm .v { color: var(--amber); }
+.sense .held { color: #0A0A0B; background: var(--lime); }
+.sense .held.warn { color: #fff; background: #FF4D3D; }
+
+/* the current step */
+.cur-card.err { border-color: color-mix(in srgb, var(--red) 55%, transparent); }
+.cur-card .waiting { font-size: 11px; letter-spacing: 0.06em; color: var(--amber); }
+.checklist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.checklist li { display: grid; grid-template-columns: 18px 1fr auto; gap: 8px; align-items: start; font-size: 13px; color: var(--fg-2); }
+.checklist .tick { width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--line-2); display: grid; place-items: center;
+  font: 500 11px var(--mono); color: var(--fg-3); }
+.checklist li.yes .tick { background: var(--lime); border-color: var(--lime); color: var(--ink); }
+.checklist li.no .tick { border-color: var(--red); color: var(--red); }
+.checklist li.unsure .tick { border-color: var(--amber); color: var(--amber); }
+.checklist li.yes .q { color: var(--fg); }
+.checklist em { font-style: normal; font: 500 10px var(--mono); letter-spacing: 0.06em; color: var(--fg-3); text-transform: uppercase; margin-left: 4px; }
+.checklist .votes { font-size: 11px; color: var(--fg-3); padding-top: 1px; }
+.abstain { font-size: 13px; color: var(--amber); background: rgba(255, 181, 71, 0.08); border-radius: 6px; padding: 8px 10px; }
+
+/* steps: status, with a progress ring on the one under way */
+.steplist li.prog .ins { color: var(--fg); }
+.steplist .n.ring { position: relative; border: 0; }
+.steplist .n.ring svg { position: absolute; inset: 0; width: 24px; height: 24px; }
+.steplist .n.ring .track { fill: none; stroke: var(--line-2); stroke-width: 1.5; }
+.steplist .n.ring .fill { fill: none; stroke: var(--lime); stroke-width: 2; stroke-linecap: round; transition: stroke-dasharray 300ms ease-out; }
+.steplist .n.ring span { position: relative; }
+.steplist li.recovery .n { border-color: var(--amber); color: var(--amber); }
+.steplist .meta .ev { color: var(--amber); }
+
+/* recovery plan */
+.recovery-card { border: 1px solid color-mix(in srgb, var(--red) 50%, transparent); background: var(--red-bg); border-radius: 10px; padding: 14px;
+  display: flex; flex-direction: column; gap: 8px; animation: rise 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.recovery-card .eyebrow.red { color: var(--red); display: inline-flex; align-items: center; gap: 6px; }
+.recovery-card .what { font-size: 15px; font-weight: 500; }
+.recovery-card .why { margin: 0; font-size: 13px; color: var(--fg-2); }
+.recovery-card .fix { margin: 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+
+/* the phone page */
+.camera-page .pic-layer { z-index: 1; }
+.camera-page .cam-step { max-width: 420px; font-size: 14px; padding: 8px 12px; border-radius: 10px; background: rgba(5, 5, 6, 0.72); }
+.camera-page .cam-step .k { font: 500 11px var(--mono); letter-spacing: 0.06em; color: var(--lime); display: block; margin-bottom: 2px; }
+.camera-page .warn-flash { position: fixed; inset: 0; z-index: 1; pointer-events: none; box-shadow: inset 0 0 0 4px #FF4D3D; animation: flash 900ms ease-out; }
+@keyframes flash { from { opacity: 1; } to { opacity: 0; } }
+
+@media (max-width: 860px) {
+  .layer-bar { bottom: 10px; gap: 8px; }
+  .layer-bar .hint { display: none; }
+  .inst-panel { left: 10px; bottom: 10px; width: calc(100% - 20px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inst-panel, .recovery-card { animation: none; }
+  .camera-page .warn-flash { animation: none; opacity: 0.6; }
+}

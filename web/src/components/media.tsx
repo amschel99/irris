@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { fileUrl, subscribeAlerts, whereLabel, type Alert, type VisionStatus } from "../lib/media";
 import { useSession } from "../lib/session";
+import { scheduler } from "../lib/scheduler";
 import { micSupported, openMic, partials, pref, recordClip, speaker, transcribe } from "../lib/voice";
 import { RecordDrawer } from "./RecordDrawer";
 import { Spinner } from "./ui";
@@ -113,7 +114,13 @@ export function AlertCenter() {
     return subscribeAlerts((a) => {
       setItems((cur) => (cur.some((x) => x.id === a.id) ? cur : [...cur.slice(-3), a]));
       if (a.speak && pref("speakAlerts", true) && !document.hidden) {
-        speaker.say(`${a.camera ? a.camera + ". " : ""}${a.say || a.title}`, { interrupt: a.severity === "danger" });
+        // through the same scheduler as everything else Irris says: danger now, warnings after a pause
+        scheduler.say({
+          text: `${a.camera ? a.camera + ". " : ""}${a.say || a.title}`,
+          severity: a.severity === "danger" ? "critical" : a.severity === "info" ? "minor" : "major",
+          kind: "warning",
+          topic: `alert:${a.kind}:${a.camera_id || ""}:${a.title}`,
+        });
       }
       const ttl = a.severity === "danger" ? 30000 : 12000;
       window.setTimeout(() => setItems((cur) => cur.filter((x) => x.id !== a.id)), ttl);

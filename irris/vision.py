@@ -39,6 +39,7 @@ class CameraHub:
         self._frames: dict[str, tuple[bytes, float]] = {}
         self._thumbs: dict[str, bytes] = {}
         self._history: dict[str, deque] = {}
+        self._changed: dict[str, float] = {}           # camera -> when the picture last changed noticeably
         self._subs: dict[str, set[asyncio.Queue]] = {}
         self.viewers: dict[str, int] = {}
 
@@ -47,6 +48,9 @@ class CameraHub:
         self._frames[camera_id] = (jpeg, t)
         th = perception.thumb(jpeg)
         if th:
+            prev = self._thumbs.get(camera_id)
+            if prev is None or perception.change(prev, th) >= GATE_CHANGE:
+                self._changed[camera_id] = t
             self._thumbs[camera_id] = th
         if self._subs.get(camera_id):
             live_ocr.maybe(camera_id, jpeg, th)
@@ -68,6 +72,13 @@ class CameraHub:
 
     def thumb(self, camera_id: str) -> bytes | None:
         return self._thumbs.get(camera_id)
+
+    def last_change(self, camera_id: str) -> float:
+        return self._changed.get(camera_id, 0.0)
+
+    def recent(self, camera_id: str, n: int = 4, seconds: float = 8.0) -> list[bytes]:
+        """The last few frames (about one a second, oldest first) for a multi-frame check."""
+        return [f for _t, f in self.history(camera_id, seconds)][-n:]
 
     def history(self, camera_id: str, seconds: float) -> list[tuple[float, bytes]]:
         since = time.time() - seconds
@@ -262,7 +273,7 @@ def where(m: llm.Model) -> str:
 
 async def call(models: list[llm.Model], messages: list[dict], *, workspace_id: str = "", kind: str = "look",
                max_tokens: int = 400, json: bool = True, background: bool | str = False,
-               timeout: float | None = None) -> tuple[dict, dict]:
+               timeout: float | None = None, temperature: float = 0.2) -> tuple[dict, dict]:
     """chat on the first model in the chain that answers. Returns (message, {model, where, ms}).
     Short, fixed-schema JSON by default; json=False is for the one escalation retry that may reason first.
     background=True: on the CPU model, skip (VisionBusy) instead of waiting when it's busy; background="wait": wait
@@ -286,7 +297,8 @@ async def call(models: list[llm.Model], messages: list[dict], *, workspace_id: s
                 if background == "wait":
                     await _cpu_gate.acquire_low()
                     try:
-                        msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json)
+                        msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json,
+                                         temperature=temperature)
                     finally:
                         _cpu_gate.release()
                 elif background:
@@ -294,14 +306,16 @@ async def call(models: list[llm.Model], messages: list[dict], *, workspace_id: s
                         gate_count(workspace_id, False)
                         raise VisionBusy("the vision model is busy; skipped")
                     try:
-                        msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json)
+                        msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json,
+                                         temperature=temperature)
                     finally:
                         _cpu_gate.release()
                 else:
                     async def run_cpu():
                         await _cpu_gate.acquire()
                         try:
-                            return await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json)
+                            return await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json,
+                                         temperature=temperature)
                         finally:
                             _cpu_gate.release()
                     try:
@@ -310,7 +324,8 @@ async def call(models: list[llm.Model], messages: list[dict], *, workspace_id: s
                         raise VisionTimeout(f"couldn't see in time ({int(limit)} s on CPU)")
             else:
                 try:
-                    msg = await asyncio.wait_for(llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json),
+                    msg = await asyncio.wait_for(llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json,
+                                         temperature=temperature),
                                                  limit + 5)
                 except asyncio.TimeoutError:
                     raise llm.ModelError("model unreachable: timeout")
@@ -677,7 +692,15 @@ def judge_reading(step: dict, reading: dict | None) -> tuple[bool | None, str]:
 
 async def check_step(models: list[llm.Model], jpeg: bytes, step: dict, index: int, total: int, knowledge: str = "",
                      *, workspace_id: str = "", roi: dict | None = None, background: bool = False,
-                     scene: str = "") -> dict:
+                     scene: str = "", frames: list[bytes] | None = None, decision: bool = False) -> dict:
+    """Steps with a reading: the step check plus a verified reading. Other steps: the step's yes/no questions over the
+    last few frames (guidance.checklist), voted when it's a decision (3 samples) and a single sample for previews."""
+    if not step.get("reading"):
+        from irris import guidance
+        clip = [f for f in (frames or []) if f is not jpeg][-3:] + [jpeg]
+        out = await guidance.checklist(models, clip, step, index, total, workspace_id=workspace_id, decision=decision,
+                                       background=background, scene=scene, knowledge=knowledge)
+        return {**out, "reading": None, "verified": None}
     text = step_context(step, index, total, knowledge)
     if scene:
         text += "\nOn-device detector, just now: " + scene[:600]

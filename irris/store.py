@@ -235,7 +235,73 @@ def clean_steps(steps: Any) -> list[dict]:
         r = s.get("reading")
         if isinstance(r, dict) and (r.get("min") is not None or r.get("max") is not None):
             step["reading"] = {k: r[k] for k in ("min", "max", "unit", "label") if r.get(k) not in (None, "")}
+        step.update(_guidance_fields(s, i, len(steps)))
         out.append(step)
+    return out
+
+
+STEP_KINDS = ("action", "measurement", "timing", "order")
+SEVERITIES = ("critical", "major", "minor")
+INTERVENTIONS = ("remind_before", "notify_if_missed", "none")
+
+
+def _guidance_fields(s: dict, i: int, total: int) -> dict:
+    """Guidance v2 step fields (docs/GUIDANCE_SPEC.md). Only what was given is kept; defaults are applied when a run
+    starts (guidance.normalize_step), so old procedures stay exactly as they were saved."""
+    out: dict = {}
+    qs = s.get("questions")
+    if isinstance(qs, list):
+        clean = []
+        for q in qs[:6]:
+            if isinstance(q, str) and q.strip():
+                q = {"q": q}
+            if isinstance(q, dict) and str(q.get("q") or "").strip():
+                clean.append({"q": str(q["q"]).strip()[:200], "must": q.get("must") is not False})
+        if clean:
+            out["questions"] = clean
+    errs = s.get("typical_errors")
+    if isinstance(errs, list):
+        errs = [str(e).strip()[:200] for e in errs if str(e or "").strip()][:8]
+        if errs:
+            out["typical_errors"] = errs
+    if s.get("kind") in STEP_KINDS:
+        out["kind"] = s["kind"]
+    if s.get("severity") in SEVERITIES:
+        out["severity"] = s["severity"]
+    if isinstance(s.get("reversible"), bool):
+        out["reversible"] = s["reversible"]
+    pre = s.get("prereqs")
+    if isinstance(pre, list):
+        try:
+            out["prereqs"] = sorted({int(p) for p in pre if 0 <= int(p) < total and int(p) != i})
+        except (TypeError, ValueError):
+            raise irf.IRFError(f"step {i + 1}: prereqs must be step numbers (0-based)")
+    z = s.get("zone")
+    if isinstance(z, dict) and isinstance(z.get("polygon"), list) and len(z["polygon"]) >= 3:
+        try:
+            out["zone"] = {"camera_id": str(z.get("camera_id") or ""),
+                           "polygon": [[max(0.0, min(1.0, float(x))), max(0.0, min(1.0, float(y)))]
+                                       for x, y in z["polygon"][:32]]}
+        except (TypeError, ValueError):
+            raise irf.IRFError(f"step {i + 1}: zone.polygon must be [[x, y], ...] in 0-1")
+    objs = s.get("expected_objects")
+    if isinstance(objs, list):
+        objs = [str(o).strip()[:60] for o in objs if str(o or "").strip()][:10]
+        if objs:
+            out["expected_objects"] = objs
+    if s.get("instrument_id"):
+        out["instrument_id"] = str(s["instrument_id"])[:40]
+    for k in ("median_s", "std_s"):
+        if isinstance(s.get(k), (int, float)) and s[k] >= 0:
+            out[k] = round(float(s[k]), 1)
+    if s.get("intervention") in INTERVENTIONS:
+        out["intervention"] = s["intervention"]
+    proto = s.get("prototype")
+    if isinstance(proto, dict) and isinstance(proto.get("vector"), list) and proto["vector"]:
+        out["prototype"] = {"vector": [round(float(v), 5) for v in proto["vector"][:1024]],
+                            "p85": float(proto.get("p85") or 0), "n": int(proto.get("n") or 0)}
+    if s.get("recovery") is True:
+        out["recovery"] = True
     return out
 
 

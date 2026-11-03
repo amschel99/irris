@@ -78,6 +78,7 @@ export class Perceiver {
   private stillSince = 0;
   private flip = false;
   private gap = 0;
+  private injectedUntil = 0;
   ready = false;
   loading = false;
   error = "";
@@ -158,6 +159,14 @@ export class Perceiver {
     this.ready = false;
   }
 
+  /** Feed a scene as if the detector had seen it (tests and demos): drawn, summarised and watched like a real one. */
+  inject(partial: Partial<Scene> & { objects?: Det[]; hands?: Hand[] }) {
+    this.injectedUntil = performance.now() + 2000;          // the live detector pauses so the two don't interleave
+    this.objects = partial.objects || [];
+    this.hands = (partial.hands || []).map((h) => ({ ...h, center: h.center || h.points[9] || h.points[0], moving: h.moving ?? true, side: h.side || "" }));
+    this.compose(performance.now());
+  }
+
   private size(): [number, number] {
     const el = this.el!;
     return el instanceof HTMLVideoElement ? [el.videoWidth, el.videoHeight] : [el.naturalWidth, el.naturalHeight];
@@ -165,7 +174,7 @@ export class Perceiver {
 
   private tick() {
     const el = this.el;
-    if (!el || !this.ready || document.hidden) return;
+    if (!el || !this.ready || document.hidden || performance.now() < this.injectedUntil) return;
     const [w, h] = this.size();
     if (!w || !h) return;
     if (el instanceof HTMLVideoElement && el.readyState < 2) return;

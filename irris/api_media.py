@@ -350,13 +350,95 @@ async def autocheck(run_id: str, request: Request, c: Ctx = Depends(ctx)):
         raise HTTPException(409, "no live camera frame to check")
     try:
         return await unless_gone(request, runs.vision_check(c.db, c.workspace, run_id, frame, gated=True,
-                                                            scene=str((b or {}).get("scene") or "")))
+                                                            scene=str((b or {}).get("scene") or ""),
+                                                            step=int(b["step"]) if (b or {}).get("step") is not None
+                                                            else None, hands=(b or {}).get("hands")))
     except vision.VisionBusy:
         return {"check": {"result": "busy", "say": "", "reading": None, "skipped": True}, "run": s}
     except runs.RunError as e:
         raise HTTPException(400, str(e))
     except llm.ModelError as e:
         raise HTTPException(502, str(e))
+
+
+# ================================================================ calibrated instruments (docs/GUIDANCE_SPEC.md)
+@router.get("/instruments")
+def list_instruments(camera_id: str = "", c: Ctx = Depends(ctx)):
+    from irris import instruments
+    found = instruments.list_all(c.db, c.ws_id)
+    return {"instruments": [i for i in found if not camera_id or i["camera_id"] == camera_id]}
+
+
+@router.post("/instruments")
+async def create_instrument(request: Request, c: Ctx = Depends(ctx)):
+    from irris import instruments
+    b = await request.json()
+    if b.get("camera_id"):
+        _camera(c, str(b["camera_id"]))
+    try:
+        return instruments.create(c.db, c.ws_id, b)
+    except instruments.InstrumentError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.put("/instruments/{iid}")
+async def update_instrument(iid: str, request: Request, c: Ctx = Depends(ctx)):
+    from irris import instruments
+    b = await request.json()
+    if b.get("camera_id"):
+        _camera(c, str(b["camera_id"]))
+    try:
+        return instruments.update(c.db, c.ws_id, iid, b)
+    except instruments.InstrumentError as e:
+        raise HTTPException(400, str(e))
+    except store.NotFound as e:
+        raise HTTPException(404, str(e))
+
+
+@router.delete("/instruments/{iid}")
+def delete_instrument(iid: str, c: Ctx = Depends(ctx)):
+    from irris import instruments
+    try:
+        instruments.delete(c.db, c.ws_id, iid)
+    except store.NotFound as e:
+        raise HTTPException(404, str(e))
+    return {"deleted": iid}
+
+
+@router.post("/instruments/{iid}/read")
+async def read_instrument(iid: str, request: Request, c: Ctx = Depends(ctx)):
+    """Read it from the camera's latest frames (body {} uses the instrument's camera; "camera_id" overrides;
+    "limits": {"min", "max"} flags values near a limit). The vision model is used only when geometry/OCR can't read
+    it, and its value always needs a person to confirm."""
+    from irris import instruments
+    b = await request.json() if (await request.body()) else {}
+    try:
+        inst = instruments.get(c.db, c.ws_id, iid)
+    except store.NotFound as e:
+        raise HTTPException(404, str(e))
+    cam = str(b.get("camera_id") or inst.get("camera_id") or "")
+    frame = await agent.camera_frame(c.db, c.ws_id, cam) if cam else None
+    if frame is None:
+        raise HTTPException(409, "no live camera frame for this instrument")
+    frames = vision.hub.recent(cam, 2, 6.0) + [frame]
+    limits = b.get("limits") if isinstance(b.get("limits"), dict) else None
+    out = await asyncio.to_thread(instruments.read, inst, frames, limits=limits)
+    if out["value"] is None:
+        models = llm.chain(c.workspace, "vlm")
+        if models:
+            crop = perception.crop(frame, dict(zip("xywh", inst["roi"]))) if inst.get("roi") else frame
+            try:
+                r = await vision.look(models, crop, f"What value does the {inst['name']} show? Unit {inst.get('unit', '')}.",
+                                      workspace_id=c.ws_id)
+            except llm.ModelError:
+                r = None
+            if r and r.get("reading"):
+                out = {"value": r["reading"]["value"], "unit": r["reading"].get("unit") or inst.get("unit", ""),
+                       "method": "vlm", "confidence": min(0.5, r["reading"].get("confidence", 0.5)),
+                       "needs_confirm": True, "reason": "read by the vision model; please confirm"}
+    if cam:
+        vision.hub.publish(cam, {"type": "instrument", "instrument_id": iid, "name": inst["name"], **out})
+    return out
 
 
 def _roi_box(b: dict) -> dict:
@@ -582,6 +664,14 @@ async def cam_ws(ws: WebSocket):
     await ws.accept()
     sub = vision.hub.subscribe(cam["id"])
     await ws.send_json({"type": "hello", "camera": cam["name"], "camera_id": cam["id"]})
+    active = db.one("SELECT id FROM runs WHERE workspace_id = ? AND camera_id = ? AND status = 'active' "
+                    "ORDER BY started DESC LIMIT 1", [cam["workspace_id"], cam["id"]])
+    if active:                                   # the phone gets the current run (zones, step) as soon as it connects
+        try:
+            st = runs.state(db, cam["workspace_id"], active["id"])
+            await ws.send_json({"type": "run", "run": runs.push_view(st), "say": st["say"]})
+        except store.NotFound:
+            pass
 
     async def pump():
         while True:

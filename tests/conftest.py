@@ -12,6 +12,7 @@ os.environ["DEEPSEEK_API_KEY"] = ""
 os.environ["VLM_BASE_URL"] = ""
 os.environ.setdefault("IRRIS_WORKER", "0")        # tests run background jobs explicitly (jobs.run_pending)
 os.environ.setdefault("IRRIS_EMBEDDINGS", "off")  # and use a fake embedder when they need one
+os.environ.setdefault("IRRIS_AUTO_RECOVER", "0")  # tests ask for recovery plans explicitly
 
 
 @pytest.fixture()
@@ -26,7 +27,7 @@ def db(tmp_path):
                   "jobs", "stored_files", "doc_pages", "embeddings", "memory_items", "memory_events",
                   "conv_summaries", "llm_calls", "ws_limits",
                   "media_settings", "camera_state", "watch_rules", "media_jobs", "observations", "camera_rois",
-                  "shift_summaries"):
+                  "shift_summaries", "run_tracker", "instruments"):
             d.execute(f"DELETE FROM {t}")
     dbmod.set_db(d)
     yield d

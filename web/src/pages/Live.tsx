@@ -1,6 +1,6 @@
 import {
-  AlertTriangle, Aperture, Camera as CamIcon, Check, ChevronLeft, CircleStop, Crop, Gauge, History, Mic, MonitorUp,
-  MoreHorizontal, Play, ScanLine, ScanEye, SkipForward, Sparkles, Video, Volume2, VolumeX, X,
+  AlertTriangle, Aperture, Camera as CamIcon, Check, ChevronLeft, CircleStop, Crop, Gauge, Hexagon, History, LifeBuoy, Mic,
+  MonitorUp, MoreHorizontal, Play, ScanLine, ScanEye, SkipForward, Sparkles, Undo2, Video, Volume2, VolumeX, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -16,7 +16,14 @@ import type { Camera, Measured, Procedure, Run } from "../lib/types";
 import { deviceName, duration, errText, num, useInterval, useLoad } from "../lib/util";
 import { drawScene, Perceiver, sceneSentence, type Scene, type SceneEvent } from "../lib/perceive";
 import { HandsFree, parseCommand, pref, setPref, speaker } from "../lib/voice";
+import {
+  createInstrument, evidenceText, labelMatches, listInstruments, patchStep, prereqsDone, readInstrument, recover, Reminders,
+  stepStatus, votesFor, Watcher, type GuidedRun, type GuidedRunStep, type Instrument, type InstrumentReading, type Pt,
+  type WatchState,
+} from "../lib/guidance";
+import { scheduler, type SayItem, type Severity } from "../lib/scheduler";
 import { Composer, Thinking, useAsk } from "./Ask";
+import "../guidance.css";
 
 const DEVICE = "device";
 const GRID = "grid";
@@ -146,6 +153,66 @@ function useCameraFeed(cameraId: string, active: boolean, video: React.RefObject
 
 const VISUAL = /\b(see|look|looking|camera|holding|doing|this|that|these|those|here|read|reading|display|gauge|right|wrong|correct)\b/i;
 
+/** A short, low tone before a critical warning: heard over machine noise, faster than words. */
+function beep() {
+  try {
+    const ac = speaker.context();
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.type = "sine";
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.16);
+    o.connect(g).connect(ac.destination);
+    o.start();
+    o.stop(ac.currentTime + 0.18);
+  } catch {
+    /* no audio */
+  }
+}
+
+function ProgressRing({ value, label }: { value: number; label: string | number }) {
+  const r = 10.5;
+  const c = 2 * Math.PI * r;
+  const v = Math.max(0, Math.min(1, value || 0));
+  return (
+    <span className="n ring" aria-label={`In progress, ${Math.round(v * 100)}%`}>
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r={r} className="track" />
+        <circle cx="12" cy="12" r={r} className="fill" strokeDasharray={`${c * v} ${c}`} transform="rotate(-90 12 12)" />
+      </svg>
+      <span>{label}</span>
+    </span>
+  );
+}
+
+const severityOf = (result: string): Severity => (result === "danger" ? "critical" : result === "pass" ? "major" : result === "fail" ? "major" : "minor");
+
+interface InstFlow {
+  phase: "roi" | "type" | "center" | "min" | "max" | "values";
+  roi?: [number, number, number, number];
+  type: "digital" | "analog";
+  name: string;
+  unit: string;
+  format: string;
+  center?: Pt;
+  min?: Pt;
+  max?: Pt;
+  vmin: string;
+  vmax: string;
+  saving?: boolean;
+}
+
+const FLOW_HINT: Record<InstFlow["phase"], string> = {
+  roi: "Drag over the gauge or display · Esc to cancel",
+  type: "",
+  center: "Tap the centre of the dial",
+  min: "Tap the lowest mark on the scale",
+  max: "Tap the highest mark on the scale",
+  values: "",
+};
+
 export function Live() {
   const { workspace, toast } = useSession();
   const [params, setParams] = useSearchParams();
@@ -165,7 +232,9 @@ export function Live() {
   const [tick, setTick] = useState(0);
   const [imgOk, setImgOk] = useState(false);
 
-  const [run, setRun] = useState<Run | null>(null);
+  const [run, setRun] = useState<GuidedRun | null>(null);
+  const runRef = useRef<GuidedRun | null>(null);
+  runRef.current = run;
   const [runLoading, setRunLoading] = useState(!!params.get("run"));
   const [procId, setProcId] = useState("");
   const [label, setLabel] = useState("");
@@ -209,6 +278,22 @@ export function Live() {
   const narrated = useRef<{ text: string; at: number; lookAt: number }>({ text: "", at: 0, lookAt: 0 });
   const autoHands = useRef(false);
 
+  // Guidance v2: warnings before the mistake, reminders, zones, instruments, recovery
+  const watcher = useRef(new Watcher());
+  const reminders = useRef(new Reminders());
+  const [watch, setWatch] = useState<WatchState | null>(null);
+  const userTalking = useRef(false);
+  const lastHeard = useRef(0);
+  const [zoneEdit, setZoneEdit] = useState<{ step: number; points: Pt[] } | null>(null);
+  const dragPoint = useRef<number | null>(null);
+  const [instruments, setInstruments] = useState<Instrument[]>([]);
+  const [flow, setFlow] = useState<InstFlow | null>(null);
+  const [flowDrag, setFlowDrag] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [watchInst, setWatchInst] = useState<string>("");
+  const [instRead, setInstRead] = useState<{ id: string; r: InstrumentReading; t: number; confirmed?: boolean } | null>(null);
+  const instBusy = useRef(false);
+  const [, setLayout] = useState(0);
+
   const [recMode, setRecMode] = useState<"view" | "camera">(() => (pref("recView", true) ? "view" : "camera"));
   const [recording, setRecording] = useState(false);
   const [recClock, setRecClock] = useState(0);
@@ -218,11 +303,23 @@ export function Live() {
   const ownMic = useRef<MediaStream | null>(null);
 
   const cameraId = source === DEVICE ? deviceCam : source === GRID ? "" : source;
+  const camRef = useRef("");
+  camRef.current = cameraId;
   const cameraList = cams.data?.cameras || [];
   const remote = cameraList.find((c) => c.id === source);
   const live = source === DEVICE ? streaming : !!remote && (remote.kind === "url" || imgOk || !!remote.live);
-  const onLive = useCallback((m: LiveMsg) => {
+  const onLive = useCallback((m: LiveMsg & { run?: GuidedRun; say?: SayItem[] }) => {
     if (m.type === "reading" || m.type === "text") setLiveRead({ ...m, t: Date.now() });
+    // the tracker pushes the run as it changes, with the lines it suggests saying
+    if (m.type === "run" && m.run && runRef.current && m.run.id === runRef.current.id) {
+      // pushes are a slim view (no log, fewer step fields): merge them into the full run, step by step
+      const pushed = m.run as Run;
+      setRun((prev) => prev && {
+        ...prev, ...pushed, log: prev.log,
+        steps: (pushed.steps || prev.steps).map((st, i) => { const uid = (st as { uid?: string }).uid; return { ...((uid && prev.steps.find((x) => (x as { uid?: string }).uid === uid)) || prev.steps[i] || {}), ...st }; }),
+      });
+    }
+    if ((m.type === "run" || m.type === "say") && Array.isArray(m.say)) m.say.forEach((s) => scheduler.say(s));
   }, []);
   const sendMode = useCameraFeed(cameraId, live && source !== GRID, videoRef, source === DEVICE && streaming, onLive);
   const expected = vstatus?.expected_s || (vstatus?.active?.where === "gpu" ? 3 : 30);
@@ -232,10 +329,45 @@ export function Live() {
     setCaps((c) => [...c.slice(-4), { id: Date.now() + Math.random(), who, text: text.trim() }]);
   }, []);
 
+  // everything Irris says here goes through the scheduler (critical now, major after a pause, minor later or never)
+  const speakOn = useRef(false);
   useEffect(() => {
-    speaker.onCaption = (who, text) => caption(who, text);
+    speaker.onCaption = null;
+    scheduler.onCaption = (full) => caption("irris", full);
+    scheduler.enabled = () => speakOn.current;
+    scheduler.ears = { speaking: () => userTalking.current, lastHeard: () => lastHeard.current };
+    scheduler.cleared = (item) => {
+      const r = runRef.current;
+      if (item.step === undefined || !r) return false;
+      if (r.status !== "active") return true;
+      const s = r.steps[item.step];
+      if (!s) return true;
+      if (["complete", "skipped"].includes(stepStatus(r, s))) return true;
+      if (item.topic?.endsWith(":wrong-object")) {
+        const held = watcher.current.lastTouched;
+        return !held || labelMatches(held, s.expected_objects || []);
+      }
+      if (item.topic?.endsWith(":prereq")) return prereqsDone(r, item.step).ok;
+      return item.step !== r.step && item.kind !== "warning";
+    };
+    watcher.current.onSay = (item) => {
+      if (item.severity === "critical" && speakOn.current) beep();
+      scheduler.say(item);
+    };
+    if (localStorage.getItem("irris.testHooks") === "1") {
+      (window as any).__irris = {
+        scheduler, watcher: watcher.current, reminders: reminders.current,
+        inject: (s: any) => perceiver.current?.inject(s),
+        ears: (talking: boolean) => { userTalking.current = talking; if (talking) lastHeard.current = performance.now(); },
+      };
+    }
     return () => {
-      speaker.onCaption = null;
+      scheduler.flush();
+      scheduler.onCaption = null;
+      scheduler.cleared = () => false;
+      scheduler.enabled = () => true;
+      scheduler.ears = { speaking: () => false, lastHeard: () => 0 };
+      watcher.current.onSay = null;
       speaker.stop();
     };
   }, [caption]);
@@ -332,15 +464,26 @@ export function Live() {
     setNote("");
   }, [run?.id, run?.step, current?.reading?.unit]);
 
-  const say = useCallback((text: string) => {
-    if (voice || hands) speaker.say(text);
-    else caption("irris", text);
-  }, [voice, hands, caption]);
+  speakOn.current = voice || hands;
+  /** Step instructions and replies: spoken whole, after the person pauses. */
+  const say = useCallback((text: string, item: Partial<SayItem> = {}) => {
+    scheduler.say({ text, kind: "instruction", severity: "major", ...item });
+  }, []);
+  const sayAll = (items?: SayItem[] | null) => (items || []).forEach((s) => scheduler.say(s));
 
-  const announce = useCallback((v: Verdict) => {
+  /** A verdict: asked for (a reply, always spoken) or from auto-check (rate-limited, timed by severity). */
+  const announce = useCallback((v: Verdict, asked = false) => {
     setVerdict(v);
-    if (v.say) say(v.say);
-  }, [say]);
+    if (!v.say) return;
+    const step = runRef.current?.step;
+    scheduler.say({
+      text: v.say,
+      kind: asked ? "reply" : "verdict",
+      severity: severityOf(v.result),
+      topic: `step${step ?? "x"}:verdict:${v.result}`,
+      step: asked ? undefined : step,
+    });
+  }, []);
 
   const start = async () => {
     if (!procId) return;
@@ -360,26 +503,29 @@ export function Live() {
     setChecking(true);
     try {
       setLooking({ since: Date.now(), what: "Checking the step" });
-      const out = await post<{ check: Verdict; run: Run }>(`/runs/${run.id}/check`, { camera_id: cameraId || undefined, scene: sceneRef.current?.summary });
-      announce({ ...out.check, at: Date.now() });
+      const out = await post<{ check: Verdict; run: GuidedRun; say?: SayItem[] }>(`/runs/${run.id}/check`, { camera_id: cameraId || undefined, scene: sceneRef.current?.summary });
+      announce({ ...out.check, at: Date.now() }, true);
       const advanced = out.run.step !== run.step || out.run.status !== run.status;
       setRun(out.run);
+      sayAll(out.say || out.run.say);
       if (advanced && out.run.status === "active") window.setTimeout(() => say(`Next. ${out.run.steps[out.run.step].instruction}`), 1600);
       if (out.run.status === "done") window.setTimeout(() => say("That's the last step. The batch record is written."), 1600);
     } catch (e) {
       setAuto(false);
-      announce({ result: "unsure", say: lookError(e), reading: null, at: Date.now() });
+      announce({ result: "unsure", say: lookError(e), reading: null, at: Date.now() }, true);
     } finally {
       setChecking(false);
       setLooking(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run, checking, cameraId, announce, say]);
 
   const autoCheck = useCallback(async () => {
     if (!run || run.status !== "active" || checking) return;
     setChecking(true);
     try {
-      const out = await post<{ check: Verdict & { skipped?: boolean }; run: Run }>(`/runs/${run.id}/check/auto`, { camera_id: cameraId || undefined, scene: sceneRef.current?.summary });
+      const out = await post<{ check: Verdict & { skipped?: boolean }; run: GuidedRun; say?: SayItem[] }>(`/runs/${run.id}/check/auto`, { camera_id: cameraId || undefined, scene: sceneRef.current?.summary });
+      sayAll(out.say || out.run?.say);
       if (out.check.skipped) return;                 // nothing changed in view, or the model is busy: try next time
       announce({ ...out.check, at: Date.now() });
       const advanced = out.run.step !== run.step || out.run.status !== run.status;
@@ -391,6 +537,7 @@ export function Live() {
     } finally {
       setChecking(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [run, checking, cameraId, announce, say]);
 
   useInterval(autoCheck, auto && live && run?.status === "active" ? AUTO_MS : null);
@@ -400,10 +547,11 @@ export function Live() {
     const reading = value.trim() ? { value: Number(value), unit } : undefined;
     if (reading && Number.isNaN(reading.value)) return toast("The reading must be a number", true);
     try {
-      const out = await post<{ check: Verdict; run: Run }>(`/runs/${run.id}/check`, { result, reading, note: note || undefined });
+      const out = await post<{ check: Verdict; run: GuidedRun; say?: SayItem[] }>(`/runs/${run.id}/check`, { result, reading, note: note || undefined });
       setRun(out.run);
       const said = out.check.result === "fail" && result === "pass" ? `Out of spec: ${out.check.say}` : out.check.say;
-      announce({ ...out.check, say: said || (result === "pass" ? "Step passed." : result === "skip" ? "Step skipped." : "Marked as failed."), at: Date.now() });
+      announce({ ...out.check, say: said || (result === "pass" ? "Step passed." : result === "skip" ? "Step skipped." : "Marked as failed."), at: Date.now() }, true);
+      sayAll(out.say || out.run.say);
       if (out.run.status === "active" && out.run.step !== run.step) window.setTimeout(() => say(`Next. ${out.run.steps[out.run.step].instruction}`), 1200);
     } catch (e) {
       toast(errText(e), true);
@@ -436,15 +584,15 @@ export function Live() {
     if (visual && (spoken || voice || hands)) {
       // an instant first answer from the on-device detector while the server takes a proper look
       const quick = sceneSentence(sceneRef.current);
-      speaker.say(quick ? `${quick}. Let me take a closer look.` : "Let me take a look.");
+      scheduler.say({ text: quick ? `${quick}. Let me take a closer look.` : "Let me take a look.", kind: "reply", severity: "major" });
     }
     if (visual) setLooking({ since: Date.now(), what: "Looking" });
     try {
       const res = await chat.send(text, { camera_id: cameraId || undefined, run_id: run?.id, scene: sceneRef.current?.summary }, conv);
       if (res?.conversation_id) setConv(res.conversation_id);
       if (res?.reply) {
-        if (spoken || voice || hands) speaker.say(res.reply);
-        else caption("irris", res.reply);
+        if (spoken && !speakOn.current) speaker.say(res.reply);        // a spoken question always gets a spoken answer
+        else scheduler.say({ text: res.reply, kind: "reply", severity: "major" });
       }
     } finally {
       if (visual) setLooking(null);
@@ -479,7 +627,7 @@ export function Live() {
     try {
       const out = await post<{ say: string; reading: Verdict["reading"]; status: string; where?: "gpu" | "cpu"; ms?: number }>(
         `/cameras/${cameraId}/read`, { what: current?.reading?.label || "the instrument in view", spec: current?.reading });
-      announce({ result: out.status === "ok" ? "pass" : out.status === "danger" ? "danger" : "unsure", say: out.say, reading: out.reading, at: Date.now(), where: out.where, ms: out.ms });
+      announce({ result: out.status === "ok" ? "pass" : out.status === "danger" ? "danger" : "unsure", say: out.say, reading: out.reading, at: Date.now(), where: out.where, ms: out.ms }, true);
       if (out.reading) {
         setValue(String(out.reading.value));
         if (out.reading.unit) setUnit(out.reading.unit);
@@ -522,10 +670,13 @@ export function Live() {
       sceneRef.current = sc;
       const cv = overlayCanvas.current;
       if (cv) drawScene(cv, sc, contentRect(el), source === DEVICE && facing === "user");
+      // hands against the work zones, every frame: the warning has to come before the part goes in
+      const ws = watcher.current.update(sc, { run: runRef.current, cameraId: camRef.current });
       const now = performance.now();
-      if (now - lastUi > 250) {
+      if (now - lastUi > 250 || Object.values(ws.zones).includes("warn")) {
         lastUi = now;
         setScene(sc);
+        setWatch({ ...ws });
       }
     };
     p.init().then((ok) => {
@@ -554,7 +705,7 @@ export function Live() {
     if (line && line !== n.text && now - n.at > 8000 && !speaker.speaking) {
       n.text = line;
       n.at = now;
-      speaker.say(line, { interrupt: false });
+      scheduler.say({ text: line, kind: "narration", severity: "major", topic: `narrate:${e.kind}:${(e as any).label || ""}` });
     }
     // a pause after work, or a new tool: one cheap look (skipped if the vision model is busy), spoken only if it matters
     const worth = e.kind === "paused" || e.kind === "picked";
@@ -572,8 +723,13 @@ export function Live() {
         if (useful && out.say !== narrated.current.text) {
           narrated.current.text = out.say;
           narrated.current.at = Date.now();
-          if (voice || hands) speaker.say(out.say, { interrupt: false });
-          else caption("irris", out.say);
+          scheduler.say({
+            text: out.say,
+            kind: "narration",
+            severity: out.status === "danger" ? "critical" : out.status === "warning" ? "major" : "minor",
+            topic: "narrate:look",
+            step: current ? run!.step : undefined,
+          });
         }
       }).catch(() => { /* busy or slow: stay quiet */ });
     }
@@ -624,6 +780,188 @@ export function Live() {
     return { left: r.left - stage.left + b.x * r.width, top: r.top - stage.top + b.y * r.height, width: b.w * r.width, height: b.h * r.height };
   };
 
+  // ---------------------------------------------------------------- Guidance v2: layout, zones, instruments, reminders
+  const mirrored = source === DEVICE && facing === "user";
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => setLayout((n) => n + 1));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  /** The picture's box inside the stage, for layers drawn in image coordinates. */
+  const pictureStyle = (): React.CSSProperties | undefined => {
+    const r = contentRect(mediaEl());
+    const stage = stageRef.current?.getBoundingClientRect();
+    if (!r || !stage) return undefined;
+    return { left: r.left - stage.left, top: r.top - stage.top, width: r.width, height: r.height };
+  };
+  /** Screen point -> image point (0..1), undoing the selfie mirror. */
+  const toImage = (clientX: number, clientY: number): Pt | null => {
+    const p = toFrame(clientX, clientY);
+    if (!p) return null;
+    return [mirrored ? 1 - p.x : p.x, p.y];
+  };
+  const dispX = (x: number) => (mirrored ? 1 - x : x);
+
+  // reminders from typical step durations: checked every second while a run is on
+  useInterval(() => {
+    for (const item of reminders.current.due(runRef.current)) scheduler.say(item);
+  }, run?.status === "active" ? 1000 : null);
+
+  // a confirmed deviation comes with a recovery plan: say it once
+  const announcedRecovery = useRef("");
+  useEffect(() => {
+    const rec = run?.recovery;
+    if (!rec || announcedRecovery.current === rec.what) return;
+    announcedRecovery.current = rec.what;
+    scheduler.say({ text: `${rec.what}${rec.fix?.[0] ? `. ${rec.fix[0]}` : ""}`, kind: "warning", severity: "major", topic: "recovery" });
+  }, [run?.recovery]);
+
+  const acceptRecovery = async () => {
+    if (!run) return;
+    try {
+      const r = await recover(run.id, { accept: true });
+      if (r && r.id) setRun(r);
+      say("Recovery steps added.", { kind: "reply" });
+    } catch (e) {
+      toast(errText(e), true);
+    }
+  };
+
+  // zones: the work area for a step, drawn on the picture
+  const editZone = () => {
+    if (!run || run.status !== "active") return toast("Start a run to draw a step's work zone", true);
+    if (!live) return toast("Start a camera first", true);
+    setMenu(false);
+    setFlow(null);
+    const z = run.steps[run.step]?.zone;
+    setZoneEdit({ step: run.step, points: z?.polygon ? [...z.polygon] : [] });
+  };
+  const saveZone = async (clear = false) => {
+    if (!run || !zoneEdit) return;
+    const zone = clear ? null : { camera_id: cameraId, polygon: zoneEdit.points };
+    if (!clear && zoneEdit.points.length < 3) return toast("A zone needs at least 3 points", true);
+    try {
+      await patchStep(run.procedure.id, zoneEdit.step, { zone });
+      setRun((r) => r && { ...r, steps: r.steps.map((s, i) => (i === zoneEdit.step ? { ...s, zone } : s)) });
+      toast(clear ? `Zone cleared for step ${zoneEdit.step + 1}` : `Work zone saved for step ${zoneEdit.step + 1}`);
+      setZoneEdit(null);
+    } catch (e) {
+      toast(errText(e), true);
+    }
+  };
+  const zoneDown = (e: React.PointerEvent) => {
+    if (!zoneEdit) return;
+    const p = toImage(e.clientX, e.clientY);
+    const box = contentRect(mediaEl());
+    if (!p || !box) return;
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    // grab a point within ~14 px, else add one
+    const near = zoneEdit.points.findIndex(([x, y]) => Math.hypot((dispX(x) - dispX(p[0])) * box.width, (y - p[1]) * box.height) < 14);
+    if (near >= 0) dragPoint.current = near;
+    else {
+      dragPoint.current = zoneEdit.points.length;
+      setZoneEdit({ ...zoneEdit, points: [...zoneEdit.points, p] });
+    }
+  };
+  const zoneMove = (e: React.PointerEvent) => {
+    if (!zoneEdit || dragPoint.current === null) return;
+    const p = toImage(e.clientX, e.clientY);
+    if (!p) return;
+    const i = dragPoint.current;
+    setZoneEdit({ ...zoneEdit, points: zoneEdit.points.map((q, k) => (k === i ? p : q)) });
+  };
+
+  // instruments: draw, calibrate, then a live reading
+  useEffect(() => {
+    if (!cameraId) return setInstruments([]);
+    listInstruments(cameraId).then(setInstruments).catch(() => setInstruments([]));
+  }, [cameraId]);
+  const linkedInst = current?.instrument_id || watchInst;
+  const inst = instruments.find((i) => i.id === linkedInst) || null;
+  useInterval(async () => {
+    if (!inst || instBusy.current || document.hidden) return;
+    instBusy.current = true;
+    try {
+      const r = await readInstrument(inst.id);
+      setInstRead((cur) => ({ id: inst.id, r, t: Date.now(), confirmed: cur?.id === inst.id && cur.confirmed && cur.r.value === r.value }));
+    } catch {
+      /* no frame yet, or busy: try again next tick */
+    } finally {
+      instBusy.current = false;
+    }
+  }, live && inst && !flow ? 3000 : null);
+
+  const startFlow = () => {
+    if (!live || !cameraId) return toast("Start a camera first", true);
+    setMenu(false);
+    setZoneEdit(null);
+    setFlow({ phase: "roi", type: "digital", name: current?.reading?.label || "", unit: current?.reading?.unit || "", format: "", vmin: "", vmax: "" });
+  };
+  const flowTap = (e: React.PointerEvent) => {
+    if (!flow) return;
+    const p = toImage(e.clientX, e.clientY);
+    if (!p) return;
+    if (flow.phase === "roi") {
+      (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+      setFlowDrag({ x0: p[0], y0: p[1], x1: p[0], y1: p[1] });
+    } else if (flow.phase === "center") setFlow({ ...flow, center: p, phase: "min" });
+    else if (flow.phase === "min") setFlow({ ...flow, min: p, phase: "max" });
+    else if (flow.phase === "max") setFlow({ ...flow, max: p, phase: "values" });
+  };
+  const flowMove = (e: React.PointerEvent) => {
+    if (!flow || flow.phase !== "roi" || !flowDrag) return;
+    const p = toImage(e.clientX, e.clientY);
+    if (p) setFlowDrag({ ...flowDrag, x1: p[0], y1: p[1] });
+  };
+  const flowUp = () => {
+    if (!flow || flow.phase !== "roi" || !flowDrag) return;
+    const roi: [number, number, number, number] = [
+      Math.min(flowDrag.x0, flowDrag.x1), Math.min(flowDrag.y0, flowDrag.y1), Math.abs(flowDrag.x1 - flowDrag.x0), Math.abs(flowDrag.y1 - flowDrag.y0),
+    ];
+    setFlowDrag(null);
+    if (roi[2] > 0.02 && roi[3] > 0.02) setFlow({ ...flow, roi, phase: "type" });
+  };
+  const saveInstrument = async () => {
+    if (!flow?.roi || !cameraId) return;
+    const name = flow.name.trim() || (flow.type === "analog" ? "Dial" : "Display");
+    let body: Omit<Instrument, "id">;
+    if (flow.type === "analog") {
+      const vmin = Number(flow.vmin);
+      const vmax = Number(flow.vmax);
+      if (!flow.center || !flow.min || !flow.max || Number.isNaN(vmin) || Number.isNaN(vmax) || flow.vmin === "" || flow.vmax === "") {
+        return toast("Enter the values of the lowest and highest marks", true);
+      }
+      body = { camera_id: cameraId, name, type: "analog", roi: flow.roi, unit: flow.unit.trim(),
+               calib: { center: flow.center, min: { point: flow.min, value: vmin }, max: { point: flow.max, value: vmax }, scale: "linear" } };
+    } else {
+      body = { camera_id: cameraId, name, type: "digital", roi: flow.roi, unit: flow.unit.trim(), format: flow.format.trim() || undefined };
+    }
+    setFlow({ ...flow, saving: true });
+    try {
+      const created = await createInstrument(body);
+      setInstruments((xs) => [...xs.filter((x) => x.id !== created.id), created]);
+      setWatchInst(created.id);
+      if (run && run.status === "active") {
+        await patchStep(run.procedure.id, run.step, { instrument_id: created.id }).catch(() => {});
+        setRun((r) => r && { ...r, steps: r.steps.map((s, i) => (i === r.step ? { ...s, instrument_id: created.id } : s)) });
+      }
+      toast(`${created.name} added. Irris reads it live.`);
+      setFlow(null);
+    } catch (e) {
+      toast(errText(e), true);
+      setFlow({ ...flow, saving: false });
+    }
+  };
+  const confirmReading = () => {
+    if (!instRead || instRead.r.value === null) return;
+    setValue(String(instRead.r.value));
+    if (instRead.r.unit) setUnit(instRead.r.unit);
+    setInstRead({ ...instRead, confirmed: true });
+    toast(run?.status === "active" ? "Reading confirmed. Tap Pass to record it." : "Reading confirmed.");
+  };
+
   // ---------------------------------------------------------------- hands-free voice
   const onUtterance = useCallback((text: string) => {
     const cmd = parseCommand(text);
@@ -634,8 +972,12 @@ export function Live() {
       case "back": return move("back");
       case "reading": return readNow();
       case "repeat":
-        return current ? speaker.say(`Step ${run!.step + 1}. ${current.instruction}${current.check ? `. Correct looks like: ${current.check}` : ""}`) : verdict ? speaker.say(verdict.say) : undefined;
-      case "stop": return speaker.stop();
+        return current
+          ? scheduler.say({ text: `Step ${run!.step + 1}. ${current.instruction}${current.check ? `. Correct looks like: ${current.check}` : ""}`, kind: "reply" })
+          : verdict ? scheduler.say({ text: verdict.say, kind: "reply" }) : undefined;
+      case "stop":
+        scheduler.flush();
+        return speaker.stop();
       case "record": return toggleRecord("view");
       default: return sendChat(text, true);
     }
@@ -658,17 +1000,25 @@ export function Live() {
     }
     const h = new HandsFree({
       onUtterance: (t) => uttRef.current(t),
-      onLevel: (l) => setLevel(l),
+      onLevel: (l, talking) => {
+        setLevel(l);
+        userTalking.current = talking;
+        if (talking) lastHeard.current = performance.now();
+      },
       onError: (m) => toast(m, true),
-      onPartial: (t) => setPartial(t),
+      onPartial: (t) => {
+        setPartial(t);
+        if (t) lastHeard.current = performance.now();
+      },
       onMode: (m) => setEarMode(m),
     });
     try {
       await h.start();
       handsRef.current = h;
       setHands(true);
+      speakOn.current = true;
       if (!auto) setPref("handsFree", true);
-      speaker.say(current ? `I'm listening. Step ${run!.step + 1}. ${current.instruction}` : "I'm listening. Ask me anything, or show me what you're working on.");
+      scheduler.say({ text: current ? `I'm listening. Step ${run!.step + 1}. ${current.instruction}` : "I'm listening. Ask me anything, or show me what you're working on.", kind: "reply" });
     } catch (e) {
       if (!auto) toast(errText(e), true);
     }
@@ -766,8 +1116,8 @@ export function Live() {
   }, [recording]);
   useInterval(() => setRecClock(recorderRef.current?.elapsed || 0), recording ? 500 : null);
 
-  const passed = useMemo(() => run?.steps.filter((s) => s.result === "pass").length || 0, [run]);
-  const deviations = useMemo(() => run?.log.filter((e) => e.result === "fail" || e.result === "danger").length || 0, [run]);
+  const passed = useMemo(() => (run ? (run.steps || []).filter((s) => stepStatus(run, s) === "complete").length : 0), [run]);
+  const deviations = useMemo(() => (run?.log || []).filter((e) => e.result === "fail" || e.result === "danger").length || 0, [run]);
   const vlmReady = vstatus ? vstatus.ready : !!(workspace?.defaults.vlm || workspace?.models.vlm?.base_url);
   const verdictTone = verdict ? (verdict.result === "pass" ? "" : verdict.result) : "";
   const shownCaps = caps.slice(-3);
@@ -817,6 +1167,8 @@ export function Live() {
                   <button className="item" role="menuitem" onClick={whatHappened} disabled={!vlmReady}><History /> What just happened? <small className="grow" style={{ textAlign: "right" }}>last 90 s</small></button>
                   <button className="item" role="menuitem" onClick={() => { setMenu(false); setDrawing(true); }} disabled={!live}><Crop /> <span>Draw the reading area<small>{run?.status === "active" ? `For step ${run.step + 1}; Irris reads a tight crop` : "For this camera"}</small></span></button>
                   {activeRoi && <button className="item" role="menuitem" onClick={() => { setMenu(false); clearRoi(); }}><X /> Clear the reading area</button>}
+                  <button className="item" role="menuitem" onClick={startFlow} disabled={!live}><Gauge /> <span>Add an instrument<small>Calibrate a dial or display; Irris reads it live</small></span></button>
+                  <button className="item" role="menuitem" onClick={editZone} disabled={!live || run?.status !== "active"}><Hexagon /> <span>Edit the step's work zone<small>{run?.status === "active" ? `Where step ${run.step + 1} happens; Irris warns before mistakes` : "Start a run first"}</small></span></button>
                   <hr />
                   <div style={{ padding: "6px 10px" }} className="stack sm">
                     <Field label="Goal (for coach mode)">
@@ -936,6 +1288,156 @@ export function Live() {
             </div>
           )}
 
+          {/* work zones and instruments, drawn in picture coordinates */}
+          {live && source !== GRID && !zoneEdit && (() => {
+            const box = pictureStyle();
+            if (!box) return null;
+            const zones = run?.status === "active"
+              ? run.steps.map((s, i) => ({ s, i })).filter(({ s, i }) => s.zone?.polygon?.length && s.zone.polygon.length >= 3
+                && (!s.zone.camera_id || !cameraId || s.zone.camera_id === cameraId)
+                && (i === run.step || watch?.zones[i] === "warn"))
+              : [];
+            const insts = instruments.filter((x) => x.id === linkedInst || flow);
+            if (!zones.length && !insts.length) return null;
+            return (
+              <div className="pic-layer" style={box} aria-hidden="true">
+                <svg viewBox="0 0 1 1" preserveAspectRatio="none" style={{ transform: mirrored ? "scaleX(-1)" : undefined }}>
+                  {zones.map(({ s, i }) => (
+                    <polygon key={i} className={`zone${watch?.zones[i] === "warn" ? " warn" : ""}${i === run!.step ? "" : " other"}`}
+                             points={s.zone!.polygon.map((p) => p.join(",")).join(" ")} vectorEffect="non-scaling-stroke" />
+                  ))}
+                </svg>
+                {zones.map(({ s, i }) => {
+                  const xs = s.zone!.polygon.map((p) => dispX(p[0]));
+                  const ys = s.zone!.polygon.map((p) => p[1]);
+                  return (
+                    <span key={`l${i}`} className={`zone-label${watch?.zones[i] === "warn" ? " warn" : ""}`} style={{ left: `${Math.min(...xs) * 100}%`, top: `${Math.min(...ys) * 100}%` }}>
+                      STEP {i + 1} ZONE{watch?.zones[i] === "warn" ? " · STOP" : ""}
+                    </span>
+                  );
+                })}
+                {insts.map((x) => (
+                  <div key={x.id} className="inst-box" style={{ left: `${dispX(mirrored ? x.roi[0] + x.roi[2] : x.roi[0]) * 100}%`, top: `${x.roi[1] * 100}%`, width: `${x.roi[2] * 100}%`, height: `${x.roi[3] * 100}%` }}>
+                    <span>{x.name.toUpperCase()} · {x.type === "analog" ? "DIAL" : "DISPLAY"}</span>
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
+
+          {zoneEdit && (() => {
+            const box = pictureStyle();
+            return (
+              <>
+                <div className="pic-layer edit" style={box} role="application" aria-label={`Tap to add the corners of step ${zoneEdit.step + 1}'s work zone; drag a corner to move it`}
+                     onPointerDown={zoneDown} onPointerMove={zoneMove} onPointerUp={() => { dragPoint.current = null; }}
+                     onKeyDown={(e) => { if (e.key === "Escape") setZoneEdit(null); if (e.key === "Enter") saveZone(); }} tabIndex={0}>
+                  <svg viewBox="0 0 1 1" preserveAspectRatio="none" style={{ transform: mirrored ? "scaleX(-1)" : undefined }}>
+                    {zoneEdit.points.length >= 2 && (
+                      <polygon className="zone editing" points={zoneEdit.points.map((p) => p.join(",")).join(" ")} vectorEffect="non-scaling-stroke" />
+                    )}
+                  </svg>
+                  {zoneEdit.points.map((p, i) => (
+                    <span key={i} className="zone-handle" style={{ left: `${dispX(p[0]) * 100}%`, top: `${p[1] * 100}%` }} />
+                  ))}
+                </div>
+                <div className="layer-bar" role="toolbar" aria-label="Work zone">
+                  <span className="mono">STEP {zoneEdit.step + 1} ZONE · {zoneEdit.points.length} POINTS</span>
+                  <span className="hint">Tap the corners of the work area</span>
+                  <div className="row" style={{ gap: 6 }}>
+                    <button className="btn sm icon" aria-label="Undo the last point" onClick={() => setZoneEdit({ ...zoneEdit, points: zoneEdit.points.slice(0, -1) })} disabled={!zoneEdit.points.length}><Undo2 /></button>
+                    {!!run?.steps[zoneEdit.step]?.zone && <button className="btn sm" onClick={() => saveZone(true)}>Clear</button>}
+                    <button className="btn sm" onClick={() => setZoneEdit(null)}>Cancel</button>
+                    <button className="btn sm primary" onClick={() => saveZone()} disabled={zoneEdit.points.length < 3}><Check /> Save zone</button>
+                  </div>
+                </div>
+              </>
+            );
+          })()}
+
+          {flow && (() => {
+            const box = pictureStyle();
+            const tapping = flow.phase === "roi" || flow.phase === "center" || flow.phase === "min" || flow.phase === "max";
+            const mark = (p?: Pt, k?: string) => p && <span className={`calib-pt ${k}`} style={{ left: `${dispX(p[0]) * 100}%`, top: `${p[1] * 100}%` }}><i>{k?.toUpperCase()}</i></span>;
+            const r = flowDrag
+              ? [Math.min(flowDrag.x0, flowDrag.x1), Math.min(flowDrag.y0, flowDrag.y1), Math.abs(flowDrag.x1 - flowDrag.x0), Math.abs(flowDrag.y1 - flowDrag.y0)]
+              : flow.roi;
+            return (
+              <>
+                <div className={`pic-layer edit${tapping ? "" : " still"}`} style={box} role="application" aria-label={FLOW_HINT[flow.phase] || "Instrument"}
+                     onPointerDown={tapping ? flowTap : undefined} onPointerMove={flowMove} onPointerUp={flowUp}
+                     onKeyDown={(e) => e.key === "Escape" && (setFlow(null), setFlowDrag(null))} tabIndex={0}>
+                  {r && <div className="inst-box drawing" style={{ left: `${dispX(mirrored ? r[0] + r[2] : r[0]) * 100}%`, top: `${r[1] * 100}%`, width: `${r[2] * 100}%`, height: `${r[3] * 100}%` }} />}
+                  {flow.type === "analog" && (
+                    <>
+                      {mark(flow.center, "c")}
+                      {mark(flow.min, "min")}
+                      {mark(flow.max, "max")}
+                      {flow.center && flow.min && (
+                        <svg viewBox="0 0 1 1" preserveAspectRatio="none" style={{ transform: mirrored ? "scaleX(-1)" : undefined }}>
+                          <line className="calib-line" x1={flow.center[0]} y1={flow.center[1]} x2={flow.min[0]} y2={flow.min[1]} vectorEffect="non-scaling-stroke" />
+                          {flow.max && <line className="calib-line" x1={flow.center[0]} y1={flow.center[1]} x2={flow.max[0]} y2={flow.max[1]} vectorEffect="non-scaling-stroke" />}
+                        </svg>
+                      )}
+                    </>
+                  )}
+                </div>
+                {tapping && <div className="roi-hint">{FLOW_HINT[flow.phase]}</div>}
+                {(flow.phase === "type" || flow.phase === "values") && (
+                  <form className="inst-panel" onSubmit={(e) => {
+                    e.preventDefault();
+                    if (flow.phase === "type") {
+                      if (flow.type === "analog") setFlow({ ...flow, phase: "center" });
+                      else saveInstrument();
+                    } else saveInstrument();
+                  }}>
+                    <div className="row between">
+                      <span className="eyebrow">{flow.phase === "type" ? "New instrument" : "Scale values"}</span>
+                      <button type="button" className="btn sm icon ghost" aria-label="Cancel" onClick={() => { setFlow(null); setFlowDrag(null); }}><X /></button>
+                    </div>
+                    {flow.phase === "type" && (
+                      <>
+                        <Field label="Name"><input className="input" value={flow.name} onChange={(e) => setFlow({ ...flow, name: e.target.value })} placeholder="Platen thermometer" autoFocus /></Field>
+                        <div className="seg" role="radiogroup" aria-label="Type">
+                          {(["digital", "analog"] as const).map((t) => (
+                            <button key={t} type="button" role="radio" aria-checked={flow.type === t} className={flow.type === t ? "on" : ""} onClick={() => setFlow({ ...flow, type: t })}>
+                              {t === "digital" ? "Digital display" : "Analog dial"}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="row" style={{ gap: 8 }}>
+                          <Field label="Unit"><input className="input mono" value={flow.unit} onChange={(e) => setFlow({ ...flow, unit: e.target.value })} placeholder="°C" /></Field>
+                          {flow.type === "digital" && (
+                            <Field label="Format" hint="Optional, e.g. 182.4"><input className="input mono" value={flow.format} onChange={(e) => setFlow({ ...flow, format: e.target.value })} placeholder="^\d{1,3}\.\d$" /></Field>
+                          )}
+                        </div>
+                        <p className="faint" style={{ margin: 0, fontSize: 12 }}>
+                          {flow.type === "digital"
+                            ? "Irris reads the digits with OCR and only accepts a value when it matches the format and 2 of 3 reads agree."
+                            : "Next: tap the dial's centre, its lowest mark and its highest mark. Irris reads the needle by geometry, not guesswork."}
+                        </p>
+                        <button className="btn primary" disabled={flow.saving}>{flow.saving ? <Spinner /> : flow.type === "analog" ? "Next: calibrate" : <><Check /> Save instrument</>}</button>
+                      </>
+                    )}
+                    {flow.phase === "values" && (
+                      <>
+                        <div className="row" style={{ gap: 8 }}>
+                          <Field label="Lowest mark"><input className="input mono" inputMode="decimal" value={flow.vmin} onChange={(e) => setFlow({ ...flow, vmin: e.target.value })} placeholder="0" autoFocus /></Field>
+                          <Field label="Highest mark"><input className="input mono" inputMode="decimal" value={flow.vmax} onChange={(e) => setFlow({ ...flow, vmax: e.target.value })} placeholder="300" /></Field>
+                          <Field label="Unit"><input className="input mono" value={flow.unit} onChange={(e) => setFlow({ ...flow, unit: e.target.value })} placeholder="°C" /></Field>
+                        </div>
+                        <div className="row" style={{ gap: 8 }}>
+                          <button type="button" className="btn" onClick={() => setFlow({ ...flow, phase: "center", center: undefined, min: undefined, max: undefined })}>Redo taps</button>
+                          <button className="btn primary grow" disabled={flow.saving}>{flow.saving ? <Spinner /> : <><Check /> Save instrument</>}</button>
+                        </div>
+                      </>
+                    )}
+                  </form>
+                )}
+              </>
+            );
+          })()}
+
           {live && source !== GRID && (
             <div className="rec">
               <span className="dot live" /> LIVE{sendMode === "ws" ? " · WS" : ""}{auto ? " · AUTO-CHECK" : ""}{camState?.coach_s ? " · COACH" : ""}
@@ -956,10 +1458,25 @@ export function Live() {
                 <div className="sense" role="status" aria-live="polite">
                   {looking && <span className="look"><Spinner /> {looking.what.toUpperCase()}… {lookClock} S · USUALLY ~{expected} S {vstatus?.active?.where === "gpu" ? "ON GPU" : "ON CPU"}</span>}
                   {scene && <span className="act"><ScanEye /> {scene.activity.toUpperCase()}{scene.fps ? ` · ${scene.fps} FPS` : ""}</span>}
+                  {watch?.lastTouched && (
+                    <span className={`held${Object.values(watch.zones).includes("warn") ? " warn" : ""}`}>HELD · {watch.lastTouched.toUpperCase()}</span>
+                  )}
                   {liveRead && Date.now() - (liveRead.t || 0) < 6000 && (
                     <span className="read">{liveRead.type === "reading" ? `DISPLAY ${num(liveRead.value || 0)} ${liveRead.unit || ""}` : `TEXT “${(liveRead.text || "").slice(0, 48)}”`} · OCR</span>
                   )}
                   {partial && <span className="heard">“{partial}”</span>}
+                </div>
+              )}
+              {inst && instRead?.id === inst.id && Date.now() - instRead.t < 15000 && (
+                <div className={`inst-chip${instRead.r.needs_confirm && !instRead.confirmed ? " confirm" : ""}`} role="status">
+                  <span className="v mono">
+                    {inst.name.toUpperCase()} · {instRead.r.value === null ? "—" : `${num(instRead.r.value)} ${instRead.r.unit || inst.unit || ""}`.trim()}
+                  </span>
+                  <span className="m mono">{String(instRead.r.method).toUpperCase()} · CONF {instRead.r.confidence.toFixed(2)}{instRead.confirmed ? " · CONFIRMED" : ""}</span>
+                  {instRead.r.reason && <span className="why">{instRead.r.reason}</span>}
+                  {instRead.r.needs_confirm && !instRead.confirmed && instRead.r.value !== null && (
+                    <button className="btn sm primary" onClick={confirmReading}><Check /> Confirm {num(instRead.r.value)}</button>
+                  )}
                 </div>
               )}
               {current && (
@@ -1074,36 +1591,94 @@ export function Live() {
                         </div>
                       </div>
                     ) : (
-                      current && (
-                        <div className="cur-card">
-                          <div className="row between">
-                            <span className="eyebrow">Step {run.step + 1} of {run.steps.length}</span>
-                            {current.checks > 0 && <ResultTag result={current.result} />}
+                      current && (() => {
+                        const pre = prereqsDone(run, run.step);
+                        const ev = evidenceText(current);
+                        const st = stepStatus(run, current);
+                        return (
+                          <div className={`cur-card${st === "error" ? " err" : ""}`}>
+                            <div className="row between">
+                              <span className="eyebrow">Step {run.step + 1} of {run.steps.length}{current.recovery ? " · recovery" : ""}{current.severity === "critical" ? " · critical" : ""}</span>
+                              {current.checks > 0 && <ResultTag result={current.result} />}
+                            </div>
+                            <div className="ins">{current.instruction}</div>
+                            {!pre.ok && <div className="waiting mono">WAITING ON STEP {pre.missing.map((i) => i + 1).join(", ")}</div>}
+                            {(current.check || current.reading || current.caution || current.expected_objects?.length) && (
+                              <dl className="spec">
+                                {current.check && <><dt>Correct</dt><dd>{current.check}</dd></>}
+                                {current.reading && <><dt>Read</dt><dd className="mono">{current.reading.label ? `${current.reading.label} ` : ""}{specText(current.reading)}</dd></>}
+                                {!!current.expected_objects?.length && <><dt>Use</dt><dd className="mono">{current.expected_objects.join(", ")}</dd></>}
+                                {current.caution && <><dt>Caution</dt><dd style={{ color: "var(--amber)" }}>{current.caution}</dd></>}
+                              </dl>
+                            )}
+                            {!!current.questions?.length && (
+                              <ul className="checklist" aria-label="What Irris checks">
+                                {current.questions.map((q, i) => {
+                                  const v = votesFor(current, i);
+                                  const total = v ? v.yes + v.no + v.unsure : 0;
+                                  const mark = !v || !total ? "" : v.yes > v.no && v.yes >= v.unsure ? "yes" : v.no > v.yes && v.no >= v.unsure ? "no" : "unsure";
+                                  return (
+                                    <li key={i} className={mark}>
+                                      <span className="tick" aria-label={mark || "not checked yet"}>{mark === "yes" ? <Check size={11} /> : mark === "no" ? <X size={11} /> : mark === "unsure" ? "?" : ""}</span>
+                                      <span className="q">{q.q}{q.must !== false && <em> must</em>}</span>
+                                      {!!total && <span className="votes mono" title="yes / no / unsure">{v!.yes}·{v!.no}·{v!.unsure}</span>}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            )}
+                            {ev && <div className="abstain" role="status">{ev}</div>}
+                            <div className="row wrap" style={{ gap: 6 }}>
+                              <button className="btn sm" onClick={editZone} disabled={!live}><Hexagon /> {current.zone ? "Edit zone" : "Draw work zone"}</button>
+                              <button className="btn sm" onClick={startFlow} disabled={!live}><Gauge /> {current.instrument_id ? "New instrument" : "Add instrument"}</button>
+                            </div>
                           </div>
-                          <div className="ins">{current.instruction}</div>
-                          {(current.check || current.reading || current.caution) && (
-                            <dl className="spec">
-                              {current.check && <><dt>Correct</dt><dd>{current.check}</dd></>}
-                              {current.reading && <><dt>Read</dt><dd className="mono">{current.reading.label ? `${current.reading.label} ` : ""}{specText(current.reading)}</dd></>}
-                              {current.caution && <><dt>Caution</dt><dd style={{ color: "var(--amber)" }}>{current.caution}</dd></>}
-                            </dl>
-                          )}
+                        );
+                      })()
+                    )}
+
+                    {run.status === "active" && run.recovery && (
+                      <div className="recovery-card" role="alert">
+                        <div className="row between">
+                          <span className="eyebrow red"><LifeBuoy size={12} /> Recovery plan</span>
+                          <button className="btn sm icon ghost" aria-label="Dismiss the recovery plan" onClick={() => setRun({ ...run, recovery: null })}><X /></button>
                         </div>
-                      )
+                        <div className="what">{run.recovery.what}</div>
+                        {(run.recovery.why || run.recovery.impact?.length) && (
+                          <p className="why">
+                            <b>Why it matters:</b> {run.recovery.why}
+                            {run.recovery.impact?.length ? ` Affects step ${run.recovery.impact.map((i) => i + 1).join(", ")}.` : ""}
+                          </p>
+                        )}
+                        {!!run.recovery.fix?.length && (
+                          <ol className="fix">{run.recovery.fix.map((f, i) => <li key={i}>{f}</li>)}</ol>
+                        )}
+                        <div className="row" style={{ gap: 8 }}>
+                          <button className="btn sm primary" onClick={acceptRecovery}><Check /> Accept plan{run.recovery.insert?.length ? ` · adds ${run.recovery.insert.length} step${run.recovery.insert.length > 1 ? "s" : ""}` : ""}</button>
+                        </div>
+                      </div>
                     )}
 
                     <ol className="steplist" aria-label="Steps">
-                      {run.steps.map((s) => {
-                        const cls = run.status === "active" && s.index === run.step ? "cur" : s.result || "";
+                      {run.steps.map((s: GuidedRunStep) => {
+                        const st = stepStatus(run, s);
+                        const isCur = run.status === "active" && s.index === run.step;
+                        const cls = [isCur ? "cur" : "", st === "complete" ? "pass" : st === "error" ? "fail" : st === "skipped" ? "skip" : st === "in_progress" ? "prog" : "", s.recovery ? "recovery" : ""].filter(Boolean).join(" ");
+                        const ev = isCur ? "" : st === "error" || st === "in_progress" ? evidenceText(s) : "";
                         return (
-                          <li key={s.index} className={cls}>
-                            <span className="n">{s.result === "pass" ? <Check size={12} /> : s.result === "fail" || s.result === "danger" ? <X size={12} /> : s.index + 1}</span>
+                          <li key={s.index} className={cls} data-status={st}>
+                            {st === "complete" ? <span className="n"><Check size={12} /></span>
+                              : st === "error" ? <span className="n"><X size={12} /></span>
+                              : st === "skipped" ? <span className="n">–</span>
+                              : st === "in_progress" && typeof s.progress === "number" ? <ProgressRing value={s.progress} label={s.index + 1} />
+                              : <span className="n">{s.index + 1}</span>}
                             <div className="grow">
-                              <div className="ins">{s.instruction}</div>
-                              {(s.say || s.measured) && (
+                              <div className="ins">{s.instruction}{s.recovery && <span className="tag amber" style={{ marginLeft: 6 }}>RECOVERY</span>}</div>
+                              {(s.say || s.measured || ev) && (
                                 <div className="meta">
                                   {s.measured && <span className="mono">{num(s.measured.value)} {s.measured.unit} · </span>}
                                   {s.say}
+                                  {ev && <span className="ev"> {ev}</span>}
                                 </div>
                               )}
                             </div>

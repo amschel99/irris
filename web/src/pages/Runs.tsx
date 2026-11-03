@@ -3,7 +3,9 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { Empty, ErrorBox, Head, Loading, ResultTag, StatusTag } from "../components/ui";
 import { get } from "../lib/api";
 import { useSession } from "../lib/session";
-import type { RecordSummary, Run, RunSummary } from "../lib/types";
+import type { RecordSummary, RunSummary } from "../lib/types";
+import { STATUS_LABEL, STATUS_TONE, type GuidedRun, type GuidedRunStep } from "../lib/guidanceTypes";
+import "../procedures.css";
 import { ago, duration, num, stamp, useLoad } from "../lib/util";
 
 export function Runs() {
@@ -44,13 +46,33 @@ export function Runs() {
   );
 }
 
+function StepEvidence({ s }: { s: GuidedRunStep }) {
+  const votes = Object.entries(s.votes || {});
+  return (
+    <>
+      {s.say}
+      {!!votes.length && (
+        <div className="votes">
+          {votes.map(([q, v]) => (
+            <span key={q} className={v.answer === "no" ? "v-no" : ""}>
+              {v.answer === "yes" ? "✓" : v.answer === "no" ? "✗" : "?"} {q.replace(/^Can you see this: /, "")} <span className="faint">{v.yes}/{v.no}/{v.unsure}</span>
+            </span>
+          ))}
+        </div>
+      )}
+      {!!s.evidence?.reasons?.length && <div className="evidence-note">{s.evidence.reasons.join(" · ")}</div>}
+    </>
+  );
+}
+
 export function RunDetail() {
   const { id = "" } = useParams();
-  const run = useLoad<Run>(() => get(`/runs/${id}`), [id]);
+  const run = useLoad<GuidedRun>(() => get(`/runs/${id}`), [id]);
   const batch = useLoad<{ records: RecordSummary[] }>(() => get(`/records?type=batch_record&subject=${encodeURIComponent(`run:${id}`)}`), [id]);
   const r = run.data;
-  const deviations = r?.log.filter((e) => e.result === "fail" || e.result === "danger") || [];
-  const passed = r?.steps.filter((s) => s.result === "pass").length || 0;
+  const deviations = r?.log.filter((e) => e.result === "fail" || e.result === "danger" || (e as any).deviation === "order") || [];
+  const passed = r?.steps.filter((s) => (s.status ? s.status === "complete" : s.result === "pass")).length || 0;
+  const m = r?.metrics;
 
   return (
     <div className="page">
@@ -75,20 +97,48 @@ export function RunDetail() {
               <div className="stat"><span className="num">{r.log.length}</span><span className="lbl">Checks</span></div>
               <div className="stat"><span className="num" style={{ fontSize: 18, paddingTop: 8 }}><StatusTag status={r.status} deviations={deviations.length} /></span><span className="lbl">Status</span></div>
             </div>
+            {m && m.vision_checks > 0 && (
+              <div className="stats">
+                <div className="stat"><span className="num">{Math.round(m.abstention_rate * 100)}%</span><span className="lbl">Camera checks it declined</span></div>
+                <div className="stat"><span className={`num${m.false_alarms ? " amber" : ""}`}>{m.false_alarms}</span><span className="lbl">Fails a person overruled</span></div>
+                <div className="stat"><span className="num">{m.median_step_s != null ? `${Math.round(m.median_step_s)} s` : "—"}</span><span className="lbl">Typical step</span></div>
+                <div className="stat"><span className="num">{m.reading_error_mean != null ? num(m.reading_error_mean) : "—"}</span><span className="lbl">Instrument vs person</span></div>
+              </div>
+            )}
+
+            {r.recovery && (
+              <section className="recovery-card" aria-label="Recovery plan">
+                <div className="row between">
+                  <h3>Recovery · step {r.recovery.step + 1}</h3>
+                  <span className={`tag ${r.recovery.status === "accepted" ? "lime" : r.recovery.status === "proposed" ? "amber" : ""}`}>{r.recovery.status}</span>
+                </div>
+                <div>{r.recovery.what}</div>
+                {r.recovery.why && <div className="muted">{r.recovery.why}</div>}
+                {!!r.recovery.impact.length && <div className="faint mono" style={{ fontSize: 12 }}>affects step {r.recovery.impact.map((i) => i + 1).join(", ")}</div>}
+                {!!r.recovery.fix.length && <ol>{r.recovery.fix.map((f, i) => <li key={i}>{f}</li>)}</ol>}
+              </section>
+            )}
 
             <section className="stack">
               <h2>Steps</h2>
               <div className="table-wrap">
                 <table className="t">
-                  <thead><tr><th>#</th><th>Instruction</th><th>Result</th><th>Reading</th><th>Note</th></tr></thead>
+                  <thead><tr><th>#</th><th>Instruction</th><th>Status</th><th>Reading</th><th>What the camera saw</th></tr></thead>
                   <tbody>
                     {r.steps.map((s) => (
-                      <tr key={s.index}>
+                      <tr key={s.uid || s.index} className={s.recovery ? "recovery-row" : ""}>
                         <td className="mono">{s.index + 1}</td>
-                        <td>{s.instruction}{s.reading && <div className="faint mono" style={{ fontSize: 11 }}>spec {s.reading.min ?? "−∞"}–{s.reading.max ?? "∞"} {s.reading.unit}</div>}</td>
-                        <td><ResultTag result={s.result} /></td>
+                        <td>
+                          {s.instruction}
+                          {s.recovery && <span className="tag amber" style={{ marginLeft: 8 }}>recovery</span>}
+                          {s.reading && <div className="faint mono" style={{ fontSize: 11 }}>spec {s.reading.min ?? "−∞"}–{s.reading.max ?? "∞"} {s.reading.unit}</div>}
+                        </td>
+                        <td>
+                          {s.status ? <span className={`tag ${STATUS_TONE[s.status]}`}>{STATUS_LABEL[s.status]}</span> : <ResultTag result={s.result} />}
+                          {s.status === "in_progress" && <div style={{ marginTop: 6 }}><span className="progress-bar" aria-label={`${Math.round((s.progress || 0) * 100)}% done`}><i style={{ width: `${Math.round((s.progress || 0) * 100)}%` }} /></span></div>}
+                        </td>
                         <td className="mono">{s.measured ? `${num(s.measured.value)} ${s.measured.unit}` : <span className="faint">—</span>}</td>
-                        <td style={{ maxWidth: 360 }}>{s.say}</td>
+                        <td style={{ maxWidth: 380 }}><StepEvidence s={s} /></td>
                       </tr>
                     ))}
                   </tbody>

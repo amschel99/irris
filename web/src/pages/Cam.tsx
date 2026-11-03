@@ -9,6 +9,26 @@ import { drawScene, mediaRect, Perceiver, type Scene } from "../lib/perceive";
 import { canRecord, LiveRecorder, mmss, type Overlay } from "../lib/recorder";
 import { errText, useInterval } from "../lib/util";
 import { pref, setPref, speaker } from "../lib/voice";
+import { labelMatches, prereqsDone, Reminders, stepStatus, Watcher, type GuidedRun, type WatchState } from "../lib/guidance";
+import { scheduler, type SayItem, type Severity } from "../lib/scheduler";
+import "../guidance.css";
+
+function tone() {
+  try {
+    const ac = speaker.context();
+    const o = ac.createOscillator();
+    const g = ac.createGain();
+    o.frequency.value = 880;
+    g.gain.setValueAtTime(0.0001, ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.25, ac.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.16);
+    o.connect(g).connect(ac.destination);
+    o.start();
+    o.stop(ac.currentTime + 0.18);
+  } catch {
+    /* no audio */
+  }
+}
 
 interface Said {
   id: number;
@@ -22,7 +42,9 @@ interface Said {
 export function Cam() {
   const [params] = useSearchParams();
   const t = params.get("t") || "";
-  const [info, setInfo] = useState<{ name: string; workspace: string } | null>(null);
+  const [info, setInfo] = useState<{ id?: string; name: string; workspace: string } | null>(null);
+  const infoId = useRef("");
+  infoId.current = info?.id || "";
   const [error, setError] = useState("");
   const [state, setState] = useState<"idle" | "starting" | "live" | "paused">("idle");
   const [sent, setSent] = useState(0);
@@ -45,19 +67,63 @@ export function Cam() {
   const perceiver = useRef<Perceiver | null>(null);
   const layer = useRef<HTMLCanvasElement>(null);
   const [scene, setScene] = useState<Scene | null>(null);
-  const [reading, setReading] = useState<{ text: string; t: number } | null>(null);
+  const [reading, setReading] = useState<{ text: string; t: number; confirm?: boolean } | null>(null);
+  // the run this camera is on, pushed by the server: zones, the current step, warnings before mistakes
+  const [run, setRun] = useState<GuidedRun | null>(null);
+  const runRef = useRef<GuidedRun | null>(null);
+  runRef.current = run;
+  const watcher = useRef(new Watcher());
+  const reminders = useRef(new Reminders());
+  const [watch, setWatch] = useState<WatchState | null>(null);
+  const [flash, setFlash] = useState(0);
 
-  // her voice on this phone comes from the workspace's TTS, through the pairing token
+  // her voice on this phone comes from the workspace's TTS, through the pairing token; every line goes through the
+  // scheduler (critical now, the rest when it's polite)
   useEffect(() => {
     speaker.ttsUrl = `/api/v1/cam/tts?t=${encodeURIComponent(t)}`;
     speaker.headers = () => ({});
-    return () => speaker.stop();
+    scheduler.enabled = () => talkRef.current;
+    scheduler.onCaption = null;
+    scheduler.cleared = (item) => {
+      const r = runRef.current;
+      if (item.step === undefined || !r) return false;
+      if (r.status !== "active") return true;
+      const s = r.steps[item.step];
+      if (!s || ["complete", "skipped"].includes(stepStatus(r, s))) return true;
+      if (item.topic?.endsWith(":wrong-object")) {
+        const held = watcher.current.lastTouched;
+        return !held || labelMatches(held, s.expected_objects || []);
+      }
+      if (item.topic?.endsWith(":prereq")) return prereqsDone(r, item.step).ok;
+      return false;
+    };
+    watcher.current.onSay = (item) => {
+      if (item.severity === "critical") {
+        setFlash(Date.now());
+        if (talkRef.current) tone();
+      }
+      setSaid((cur) => [...cur.slice(-2), { id: Date.now() + Math.random(), kind: "alert", tone: item.severity === "critical" ? "danger" : "fail", head: "WATCH", text: item.text }]);
+      scheduler.say(item);
+    };
+    return () => {
+      speaker.stop();
+      scheduler.flush();
+      scheduler.enabled = () => true;
+      scheduler.cleared = () => false;
+      watcher.current.onSay = null;
+    };
   }, [t]);
 
-  const show = useCallback((s: Omit<Said, "id">) => {
+  const show = useCallback((s: Omit<Said, "id">, item: Partial<SayItem> = {}) => {
     setSaid((cur) => [...cur.slice(-2), { ...s, id: Date.now() + Math.random() }]);
-    if (talkRef.current && s.text) speaker.say(s.text, { interrupt: s.tone === "danger" || s.kind === "verdict" });
+    if (!s.text) return;
+    const severity: Severity = s.tone === "danger" ? "critical" : s.kind === "verdict" ? "major" : s.tone === "info" ? "minor" : "major";
+    scheduler.say({ text: s.text, severity, kind: s.kind === "verdict" ? "verdict" : "warning", ...item });
   }, []);
+
+  useInterval(() => {
+    for (const item of reminders.current.due(runRef.current)) show({ kind: "alert", tone: "info", head: "REMINDER", text: item.text }, item);
+  }, run?.status === "active" ? 1000 : null);
 
   useEffect(() => {
     if (!t) {
@@ -92,13 +158,26 @@ export function Cam() {
         try { m = JSON.parse(e.data); } catch { return; }
         if (m.type === "verdict") {
           const head = m.result === "pass" ? `STEP ${m.step} · OK` : `STEP ${m.step} · ${String(m.result).toUpperCase()}`;
-          show({ kind: "verdict", tone: m.result, head, text: m.say || "" });
+          show({ kind: "verdict", tone: m.result, head, text: m.say || "" }, { topic: `step${m.step}:verdict:${m.result}` });
           if (m.next) {
             setStep(m.next);
-            window.setTimeout(() => talkRef.current && speaker.say(`Next. ${m.next}`, { interrupt: false }), 300);
+            window.setTimeout(() => scheduler.say({ text: `Next. ${m.next}`, kind: "instruction", severity: "major" }), 300);
           }
-        } else if (m.type === "reading" || m.type === "text") {
-          setReading({ text: m.type === "reading" ? `DISPLAY ${m.value} ${m.unit || ""}`.trim() : `TEXT “${String(m.text || "").slice(0, 40)}”`, t: Date.now() });
+        } else if (m.type === "run" && m.run) {
+          setRun(m.run as GuidedRun);
+          const cur = m.run.status === "active" ? m.run.steps?.[m.run.step] : null;
+          if (cur?.instruction) setStep(cur.instruction);
+          (m.say || []).forEach((s: SayItem) => scheduler.say(s));
+        } else if (m.type === "say" && Array.isArray(m.say)) {
+          m.say.forEach((s: SayItem) => scheduler.say(s));
+        } else if (m.type === "reading" || m.type === "text" || m.type === "instrument") {
+          const label = m.name ? String(m.name).toUpperCase() : m.type === "text" ? "TEXT" : "DISPLAY";
+          const how = m.method ? String(m.method).toUpperCase() : "OCR";
+          setReading({
+            text: m.type === "text" ? `TEXT “${String(m.text || "").slice(0, 40)}”` : `${label} ${m.value ?? "—"} ${m.unit || ""}`.trim() + ` · ${how}${typeof m.confidence === "number" ? ` ${m.confidence.toFixed(2)}` : ""}`,
+            t: Date.now(),
+            confirm: !!m.needs_confirm,
+          });
         } else if (m.type === "alert") {
           show({ kind: "alert", tone: m.severity, head: `${String(m.kind).toUpperCase()}${m.severity === "danger" ? " · DANGER" : ""}`, text: m.say || m.title });
         }
@@ -151,12 +230,17 @@ export function Cam() {
     let lastUi = 0;
     p.onScene = (sc) => {
       if (layer.current) drawScene(layer.current, sc, mediaRect(el), facing === "user");
+      const ws = watcher.current.update(sc, { run: runRef.current, cameraId: infoId.current });
       const now = performance.now();
-      if (now - lastUi > 300) {
+      if (now - lastUi > 300 || Object.values(ws.zones).includes("warn")) {
         lastUi = now;
         setScene(sc);
+        setWatch({ ...ws });
       }
     };
+    if (localStorage.getItem("irris.testHooks") === "1") {
+      (window as any).__irris = { scheduler, watcher: watcher.current, inject: (s: any) => p.inject(s), setRun: (r: GuidedRun) => setRun(r) };
+    }
     p.init().then((ok) => !gone && ok && p.start(el));
     return () => {
       gone = true;
@@ -265,6 +349,23 @@ export function Cam() {
     <div className="camera-page page-rec">
       <video ref={video} playsInline muted autoPlay style={{ opacity: state === "live" ? 1 : 0, transform: facing === "user" ? "scaleX(-1)" : undefined }} />
       {state === "live" && <canvas ref={layer} className="perceive-layer" aria-hidden="true" />}
+      {state === "live" && run?.status === "active" && (() => {
+        const r = mediaRect(video.current);
+        const zones = run.steps.map((s, i) => ({ s, i })).filter(({ s, i }) => (s.zone?.polygon?.length || 0) >= 3
+          && (!s.zone!.camera_id || !info?.id || s.zone!.camera_id === info.id) && (i === run.step || watch?.zones[i] === "warn"));
+        if (!r || !zones.length) return null;
+        return (
+          <div className="pic-layer" style={{ left: r.left, top: r.top, width: r.width, height: r.height }} aria-hidden="true">
+            <svg viewBox="0 0 1 1" preserveAspectRatio="none" style={{ transform: facing === "user" ? "scaleX(-1)" : undefined }}>
+              {zones.map(({ s, i }) => (
+                <polygon key={i} className={`zone${watch?.zones[i] === "warn" ? " warn" : ""}${i === run.step ? "" : " other"}`}
+                         points={s.zone!.polygon.map((p) => p.join(",")).join(" ")} vectorEffect="non-scaling-stroke" />
+              ))}
+            </svg>
+          </div>
+        );
+      })()}
+      {flash > 0 && Date.now() - flash < 1500 && <div key={flash} className="warn-flash" aria-hidden="true" />}
       <div className="top">
         <Mark size={18} />
         <span style={{ fontWeight: 600, letterSpacing: "0.3em", fontSize: 12 }}>IRRIS</span>
@@ -277,10 +378,14 @@ export function Cam() {
       </div>
       <div className="bottom">
         {info && <div className="mono" style={{ fontSize: 11, color: "#A3A3A8", letterSpacing: "0.06em" }}>{info.workspace.toUpperCase()} · {info.name.toUpperCase()}</div>}
+        {state === "live" && run?.status === "active" && run.steps[run.step] && (
+          <div className="cam-step"><span className="k">STEP {run.step + 1} OF {run.steps.length}</span>{run.steps[run.step].instruction}</div>
+        )}
         {state === "live" && (scene || reading) && (
           <div className="sense" style={{ justifyContent: "center" }} role="status">
             {scene && <span className="act">{scene.activity.toUpperCase()}</span>}
-            {reading && Date.now() - reading.t < 6000 && <span className="read">{reading.text} · OCR</span>}
+            {watch?.lastTouched && <span className={`held${Object.values(watch.zones).includes("warn") ? " warn" : ""}`}>HELD · {watch.lastTouched.toUpperCase()}</span>}
+            {reading && Date.now() - reading.t < 6000 && <span className="read">{reading.text.includes(" · ") ? reading.text : `${reading.text} · OCR`}{reading.confirm ? " · CONFIRM ON SCREEN" : ""}</span>}
           </div>
         )}
         {state === "live" && said.length > 0 && (
