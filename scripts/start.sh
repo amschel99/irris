@@ -25,12 +25,28 @@ for _ in $(seq 1 90); do
   kill -0 "$OLLAMA_PID" 2>/dev/null || { log "ollama exited during startup"; exit 1; }
   sleep 1
 done
-log "ollama is up; warming $MODEL in the background"
+# Inside a container the model server sees the host's cores, not the container's share, and oversubscribes the
+# CPU (a few tokens a second). Pin its threads to the container's real quota in a CPU copy of the model.
+CPUS=$(awk '$1 != "max" { print int(($1 + $2 - 1) / $2) }' /sys/fs/cgroup/cpu.max 2>/dev/null || true)
+[[ "${CPUS:-}" =~ ^[0-9]+$ && "$CPUS" -gt 0 ]] || CPUS=$(nproc)
+THREADS="${OLLAMA_THREADS:-$(( CPUS > 3 ? CPUS - 1 : CPUS ))}"
+(( THREADS > 16 )) && THREADS=16
+CPU_MODEL="${MODEL%%:*}-cpu"
+printf 'FROM %s\nPARAMETER num_thread %s\n' "$MODEL" "$THREADS" > /tmp/Modelfile
+if ollama create "$CPU_MODEL" -f /tmp/Modelfile >/dev/null 2>&1; then
+  export VLM_FALLBACK_MODEL="$CPU_MODEL"
+  log "vision model $CPU_MODEL: $THREADS threads (container CPUs: $CPUS, host: $(nproc))"
+else
+  log "couldn't pin threads; using $MODEL as it is"
+  CPU_MODEL="$MODEL"
+fi
+log "warming $CPU_MODEL in the background"
 ( curl -fsS --max-time 600 http://127.0.0.1:11434/api/generate \
-    -d "{\"model\":\"$MODEL\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_predict\":1}}" \
-    >/dev/null 2>&1 && log "$MODEL warmed" || log "warm-up failed; the first check will load it" ) &
+    -d "{\"model\":\"$CPU_MODEL\",\"prompt\":\"ok\",\"stream\":false,\"keep_alive\":-1,\"options\":{\"num_predict\":1}}" \
+    >/dev/null 2>&1 && log "$CPU_MODEL warmed" || log "warm-up failed; the first check will load it" ) &
 
-python -m irris &
+# The app's own engines (search embedder, OCR, voice) stay on a couple of threads each.
+OMP_NUM_THREADS="${OMP_NUM_THREADS:-2}" python -m irris &
 APP_PID=$!
 set +e
 wait -n "$OLLAMA_PID" "$APP_PID"

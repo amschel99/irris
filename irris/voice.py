@@ -142,7 +142,12 @@ def _kokoro():
     for p in (model, voices):
         if not p.exists():
             raise FileNotFoundError(f"{p} is missing")
-    return Kokoro(str(model), str(voices))
+    import onnxruntime as ort
+    opts = ort.SessionOptions()
+    opts.intra_op_num_threads = int(os.environ.get("TTS_THREADS", "2"))   # leave the cores to the vision model
+    opts.inter_op_num_threads = 1
+    opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+    return Kokoro.from_session(ort.InferenceSession(str(model), opts, providers=["CPUExecutionProvider"]), str(voices))
 
 
 def _piper():

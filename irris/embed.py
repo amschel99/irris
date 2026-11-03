@@ -38,6 +38,7 @@ class FastEmbedder:
         kwargs = {"model_name": model}
         if os.environ.get("FASTEMBED_CACHE"):
             kwargs["cache_dir"] = os.environ["FASTEMBED_CACHE"]
+        kwargs["threads"] = int(os.environ.get("EMBED_THREADS", "2"))   # leave the cores to the vision model
         self.model = model
         self._m = TextEmbedding(**kwargs)
 

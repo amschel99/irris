@@ -12,6 +12,7 @@ vision model alone.
 from __future__ import annotations
 
 import io
+import os
 import math
 import re
 import threading
@@ -129,7 +130,9 @@ def _engine():
         if _ocr is None and not _ocr_failed:
             try:
                 from rapidocr_onnxruntime import RapidOCR
-                _ocr = RapidOCR()
+                n = int(os.environ.get("OCR_THREADS", "2"))      # leave the cores to the vision model
+                _ocr = RapidOCR(**{f"{s}_{k}": v for s in ("det", "cls", "rec")
+                                   for k, v in (("intra_op_num_threads", n), ("inter_op_num_threads", 1))})
             except Exception as e:  # noqa: BLE001 - OCR is optional
                 _ocr_failed = f"{type(e).__name__}: {str(e)[:120]}"
         return _ocr
