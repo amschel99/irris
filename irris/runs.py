@@ -186,7 +186,8 @@ def refresh_batch_record(db: Database, workspace_id: str, run_id: str) -> None:
         _batch_record(db, workspace_id, run_id)
 
 
-async def vision_check(db: Database, workspace: dict, run_id: str, jpeg: bytes, *, gated: bool = False) -> dict:
+async def vision_check(db: Database, workspace: dict, run_id: str, jpeg: bytes, *, gated: bool = False,
+                       scene: str = "") -> dict:
     """Ask the vision model whether the current step is done, then log it.
 
     Verify before advancing: with `gated` (auto-check), a cheap change score on the step's region proposes "something
@@ -210,7 +211,8 @@ async def vision_check(db: Database, workspace: dict, run_id: str, jpeg: bytes, 
     models = llm.chain(workspace, "vlm")
     if not models:
         raise RunError("no vision model is set up. Add one in Settings → Models, or mark the step by hand.")
-    out = await vision.check_step(models, jpeg, step, s["step"], len(s["steps"]), knowledge, workspace_id=ws_id, roi=roi)
+    out = await vision.check_step(models, jpeg, step, s["step"], len(s["steps"]), knowledge, workspace_id=ws_id, roi=roi,
+                                  background=gated, scene=scene)
     _last_seen[key] = th
     snap = vision.save_snapshot(db, ws_id, jpeg, f"run {run_id} step {s['step'] + 1}.jpg")
     out["snapshot"] = snap

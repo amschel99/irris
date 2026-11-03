@@ -84,7 +84,7 @@ export function Thinking({ steps }: { steps: string[] }) {
   );
 }
 
-export function Composer({ onSend, busy, onStop, placeholder, autoFocus, mic = true }: { onSend: (t: string) => void; busy: boolean; onStop?: () => void; placeholder?: string; autoFocus?: boolean; mic?: boolean }) {
+export function Composer({ onSend, busy, onStop, placeholder, autoFocus, mic = true }: { onSend: (t: string, spoken?: boolean) => void; busy: boolean; onStop?: () => void; placeholder?: string; autoFocus?: boolean; mic?: boolean }) {
   const [text, setText] = useState("");
   const [partial, setPartial] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -118,7 +118,7 @@ export function Composer({ onSend, busy, onStop, placeholder, autoFocus, mic = t
           }
         }}
       />
-      {mic && !text.trim() && !busy && <MicButton onText={(t) => onSend(t)} onPartial={setPartial} label="Talk to Irris" />}
+      {mic && !text.trim() && !busy && <MicButton onText={(t) => onSend(t, true)} onPartial={setPartial} label="Talk to Irris" />}
       {busy && onStop ? (
         <button className="btn icon" aria-label="Stop" onClick={onStop}><Square /></button>
       ) : (
@@ -166,10 +166,11 @@ export function AskPage() {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: "smooth" });
   }, [messages, pending]);
 
-  const submit = async (text: string) => {
+  const submit = async (text: string, spoken = false) => {
     speaker.stop();
     const res = await send(text, {}, convId);
-    if (res?.reply && speakRef.current) speaker.say(res.reply);
+    // a question asked out loud gets a spoken answer, whatever the toggle says
+    if (res?.reply && (spoken || speakRef.current)) speaker.say(res.reply);
     if (res?.conversation_id && res.conversation_id !== convId) {
       setParams({ c: res.conversation_id }, { replace: true });
     }

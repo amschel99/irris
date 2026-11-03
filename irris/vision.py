@@ -7,7 +7,11 @@ frame is taken) or, with OpenCV, RTSP.
 
 The vision model is a chain (llm.chain): the GPU / workspace model first, the container's CPU model as the
 fallback. Every call is timed and labelled, so the dashboard can show where vision runs and how fast. Calls to the
-CPU fallback are serialised: one at a time, so a watch rule can't starve a person asking a question.
+CPU fallback go one at a time through a priority gate: a person asking a question goes first; background work
+(watch rules, coach, auto-checks, reviews) never waits in line: when the CPU model is busy it's skipped.
+
+The fast layer runs without the model: the browser draws object and hand detections live, and frames from a watched
+camera get OCR (at most once a second, only when the picture changed) streamed back as live readings.
 """
 from __future__ import annotations
 
@@ -44,6 +48,8 @@ class CameraHub:
         th = perception.thumb(jpeg)
         if th:
             self._thumbs[camera_id] = th
+        if self._subs.get(camera_id):
+            live_ocr.maybe(camera_id, jpeg, th)
         hist = self._history.setdefault(camera_id, deque())
         if not hist or t - hist[-1][0] >= 1.0:            # at most one history frame a second
             hist.append((t, shrink(jpeg, HISTORY_SIDE, quality=72)))
@@ -147,7 +153,9 @@ MODEL_TWEAKS: list[tuple[str, dict]] = [
     ("qwen3-vl", {"suffix": "", "box_scale": 1000.0}),
     ("qwen2.5vl", {"suffix": "", "box_scale": 1000.0}),
 ]
-IMAGE_SIDE = {"cpu": 1024, "gpu": 1536}       # the long side sent to the model; crops carry small text instead
+IMAGE_SIDE = {"cpu": 512, "gpu": 1280}        # the long side sent to the model; crops carry small text instead
+TIMEOUT = {"cpu": 90.0, "gpu": 45.0}            # an interactive look, including the wait for the CPU model
+BACKGROUND_TIMEOUT = 240.0
 
 
 def tweaks(model: str) -> dict:
@@ -183,7 +191,66 @@ def changed(prev: bytes | None, cur: bytes | None, threshold: float = GATE_CHANG
 
 # ================================================================ the model chain, timed and labelled
 _stats: dict[str, dict] = {}                  # workspace id -> last call
-_cpu_gate = asyncio.Semaphore(1)
+
+
+class VisionBusy(llm.ModelError):
+    """Background work skipped because the CPU model is busy (it never queues)."""
+
+
+class VisionTimeout(llm.ModelError):
+    pass
+
+
+class PriorityGate:
+    """One call at a time on the CPU model. Interactive callers queue (first come, first served) and always go
+    before background work; background callers only take a free gate with nobody waiting, otherwise they're skipped."""
+
+    def __init__(self):
+        self._busy = False
+        self._waiters: deque = deque()
+
+    def locked(self) -> bool:
+        return self._busy
+
+    def waiting(self) -> int:
+        return len(self._waiters)
+
+    def try_acquire(self) -> bool:
+        if self._busy or self._waiters:
+            return False
+        self._busy = True
+        return True
+
+    async def acquire_low(self) -> None:
+        """Background work that must finish (a video review): wait for a free gate, always letting people go first."""
+        while not self.try_acquire():
+            await asyncio.sleep(0.25)
+
+    async def acquire(self) -> None:
+        if not self._busy and not self._waiters:
+            self._busy = True
+            return
+        fut = asyncio.get_running_loop().create_future()
+        self._waiters.append(fut)
+        try:
+            await fut
+        except BaseException:
+            if fut in self._waiters:
+                self._waiters.remove(fut)
+            elif fut.done() and not fut.cancelled():
+                self.release()          # we were handed the gate as we got cancelled: pass it on
+            raise
+
+    def release(self) -> None:
+        while self._waiters:
+            fut = self._waiters.popleft()
+            if not fut.done():
+                fut.set_result(True)    # hand over directly; _busy stays True
+                return
+        self._busy = False
+
+
+_cpu_gate = PriorityGate()
 
 
 def where(m: llm.Model) -> str:
@@ -194,9 +261,13 @@ def where(m: llm.Model) -> str:
 
 
 async def call(models: list[llm.Model], messages: list[dict], *, workspace_id: str = "", kind: str = "look",
-               max_tokens: int = 400, json: bool = True) -> tuple[dict, dict]:
+               max_tokens: int = 400, json: bool = True, background: bool | str = False,
+               timeout: float | None = None) -> tuple[dict, dict]:
     """chat on the first model in the chain that answers. Returns (message, {model, where, ms}).
-    Short, fixed-schema JSON by default; json=False is for the one escalation retry that may reason first."""
+    Short, fixed-schema JSON by default; json=False is for the one escalation retry that may reason first.
+    background=True: on the CPU model, skip (VisionBusy) instead of waiting when it's busy; background="wait": wait
+    at the lowest priority (reviews that must finish). Interactive calls have a
+    hard timeout that includes the wait (VisionTimeout); cancelling the caller (a client that left) cancels the call."""
     if not models:
         raise llm.ModelError("no vision model is configured")
     errors = []
@@ -209,12 +280,42 @@ async def call(models: list[llm.Model], messages: list[dict], *, workspace_id: s
         suffix = tweaks(m.model)["suffix"]
         msgs = [{**messages[0], "content": messages[0]["content"] + suffix}, *messages[1:]] \
             if suffix and messages and messages[0]["role"] == "system" else messages
+        limit = timeout or (BACKGROUND_TIMEOUT if background else TIMEOUT["cpu" if on_cpu else "gpu"])
         try:
             if on_cpu:
-                async with _cpu_gate:
-                    msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=300, json_mode=json)
+                if background == "wait":
+                    await _cpu_gate.acquire_low()
+                    try:
+                        msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json)
+                    finally:
+                        _cpu_gate.release()
+                elif background:
+                    if not _cpu_gate.try_acquire():
+                        gate_count(workspace_id, False)
+                        raise VisionBusy("the vision model is busy; skipped")
+                    try:
+                        msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json)
+                    finally:
+                        _cpu_gate.release()
+                else:
+                    async def run_cpu():
+                        await _cpu_gate.acquire()
+                        try:
+                            return await llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json)
+                        finally:
+                            _cpu_gate.release()
+                    try:
+                        msg = await asyncio.wait_for(run_cpu(), limit)
+                    except asyncio.TimeoutError:
+                        raise VisionTimeout(f"couldn't see in time ({int(limit)} s on CPU)")
             else:
-                msg = await llm.chat(m, msgs, max_tokens=max_tokens, timeout=90, json_mode=json)
+                try:
+                    msg = await asyncio.wait_for(llm.chat(m, msgs, max_tokens=max_tokens, timeout=limit, json_mode=json),
+                                                 limit + 5)
+                except asyncio.TimeoutError:
+                    raise llm.ModelError("model unreachable: timeout")
+        except (VisionBusy, VisionTimeout):
+            raise
         except llm.ModelError as e:
             errors.append(f"{m.model}: {e}")
             if "unreachable" in str(e) or " 5" in str(e)[:16]:
@@ -236,6 +337,70 @@ def stats(workspace_id: str) -> dict | None:
 
 def busy_cpu() -> bool:
     return _cpu_gate.locked()
+
+
+def queue_depth() -> int:
+    return _cpu_gate.waiting()
+
+
+def expected_seconds(models: list[llm.Model]) -> int:
+    """A rough answer time for the UI: recent measured looks, else a typical figure."""
+    first = next((m for m in models if llm._down.get(m.base_url, 0) <= time.time()), None)
+    on_cpu = first is None or where(first) == "cpu"
+    recent = [v["ms"] for v in _stats.values() if v.get("where") == ("cpu" if on_cpu else "gpu") and v.get("kind") == "look"]
+    if recent:
+        return max(1, int(sorted(recent)[len(recent) // 2] / 1000))
+    return 30 if on_cpu else 3
+
+
+# ================================================================ live OCR: the fast layer for displays
+class LiveOCR:
+    """OCR on a watched camera's frames: at most once a second per camera, only when the picture changed, one at a
+    time across all cameras, and never while someone waits for the CPU model. Results are pushed to whoever is
+    watching as {"type": "reading"} (a number it could read) or {"type": "text"} (words in view)."""
+
+    INTERVAL = 1.0
+
+    def __init__(self):
+        self._last: dict = {}
+        self._running = False
+        self.enabled = True
+
+    def maybe(self, camera_id: str, jpeg: bytes, thumb: bytes | None) -> None:
+        if not self.enabled or self._running or queue_depth():
+            return
+        t, prev = self._last.get(camera_id, (0.0, None))
+        now_ = time.time()
+        if now_ - t < self.INTERVAL or (prev is not None and thumb is not None and perception.change(prev, thumb) < 0.02):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._last[camera_id] = (now_, thumb)
+        self._running = True
+        loop.create_task(self._run(camera_id, jpeg))
+
+    async def _run(self, camera_id: str, jpeg: bytes) -> None:
+        try:
+            texts = await asyncio.to_thread(perception.ocr, shrink(jpeg, 960))
+        except Exception:  # noqa: BLE001 - OCR is a helper
+            texts = None
+        finally:
+            self._running = False
+        if not texts:
+            return
+        r = perception.display_reading(texts)
+        words = " ".join(str(t.get("text", "")) for t in texts[:12])[:240]
+        if r:
+            hub.publish(camera_id, {"type": "reading", "value": r["value"], "unit": r.get("unit", ""),
+                                    "confidence": r.get("confidence", 0.7), "text": words, "source": "ocr",
+                                    "t": time.time()})
+        elif words.strip():
+            hub.publish(camera_id, {"type": "text", "text": words, "source": "ocr", "t": time.time()})
+
+
+live_ocr = LiveOCR()
 
 
 # ================================================================ prompts
@@ -331,12 +496,14 @@ def _box(value, scale: float = 1.0) -> dict | None:
     return b
 
 
-async def _read_once(models: list[llm.Model], image: bytes, *, workspace_id: str, hint: str = "", think: bool = False) -> dict:
+async def _read_once(models: list[llm.Model], image: bytes, *, workspace_id: str, hint: str = "", think: bool = False,
+                     background: bool = False) -> dict:
     text = (hint + "\n" if hint else "") + ("Look carefully, reason briefly about the scale and digits, then give the JSON."
                                             if think else "Read the instrument.")
     content = [{"type": "text", "text": text}, llm.image_part(image)]
     msg, info = await call(models, [{"role": "system", "content": READ_PROMPT}, {"role": "user", "content": content}],
-                           workspace_id=workspace_id, kind="read", max_tokens=600 if think else 160, json=not think)
+                           workspace_id=workspace_id, kind="read", max_tokens=600 if think else 160, json=not think,
+                           background=background)
     out = llm.parse_json(msg.get("content") or "")
     r = None
     if out.get("value") is not None:
@@ -349,7 +516,7 @@ def _agree(a: dict, b: dict, spec: dict | None) -> bool:
 
 
 async def read_verified(models: list[llm.Model], jpeg: bytes, spec: dict | None = None, roi: dict | None = None,
-                        *, workspace_id: str = "", hint: str = "") -> dict:
+                        *, workspace_id: str = "", hint: str = "", background: bool = False) -> dict:
     """Crop to the instrument, then verify. Read 1: the saved ROI crop, else the whole frame (which also locates the
     instrument). Read 2: a tight crop at higher resolution (the model's box, else OCR's digit box). Agreement with
     confidence >= 0.6 is a verified reading; otherwise one more careful read; still split -> "unsure". OCR digits, when
@@ -358,13 +525,13 @@ async def read_verified(models: list[llm.Model], jpeg: bytes, spec: dict | None 
     side = side_for(models)
     reads: list[dict] = []
     first_img = perception.crop(jpeg, roi) if roi else shrink(jpeg, side)
-    r1 = await _read_once(models, first_img, workspace_id=workspace_id, hint=hint)
+    r1 = await _read_once(models, first_img, workspace_id=workspace_id, hint=hint, background=background)
     reads.append(r1)
     box = roi or (r1["box"] if not roi else None)
     if box is None:
         box = await asyncio.to_thread(perception.text_box, jpeg)
     tight = perception.crop(jpeg, box, pad=0.15, min_side=640) if box else shrink(jpeg, min(side * 2, 2048))
-    r2 = await _read_once(models, tight, workspace_id=workspace_id, hint=hint)
+    r2 = await _read_once(models, tight, workspace_id=workspace_id, hint=hint, background=background)
     reads.append(r2)
     a, b = r1["reading"], r2["reading"]
     ocr = await asyncio.to_thread(lambda: perception.display_reading(perception.ocr(tight), (spec or {}).get("unit", "")))
@@ -374,7 +541,7 @@ async def read_verified(models: list[llm.Model], jpeg: bytes, spec: dict | None 
     if a and b and _agree(a, b, spec) and min(a["confidence"], b["confidence"]) >= 0.6:
         best, verified = {**b, "value": round((a["value"] + b["value"]) / 2, 4)}, True
     else:
-        r3 = await _read_once(models, tight, workspace_id=workspace_id, hint=hint, think=True)
+        r3 = await _read_once(models, tight, workspace_id=workspace_id, hint=hint, think=True, background=background)
         reads.append(r3)
         c = r3["reading"]
         votes = [x for x in (a, b, c) if x]
@@ -443,8 +610,15 @@ def combine(vlm: dict | None, fast: dict | None, spec: dict | None) -> dict | No
 
 
 async def look(models: list[llm.Model], jpeg: bytes, question: str, context: str = "", *, workspace_id: str = "",
-               spec: dict | None = None) -> dict:
-    if SPATIAL.search(question or ""):
+               spec: dict | None = None, scene: str = "", background: bool = False) -> dict:
+    """One model call. `scene` is what the on-device detector sees right now (objects, hands, activity), a cheap hint
+    for the model. On a GPU, "where/which" questions get the frame's self-caption first; on the CPU model only a
+    caption that's already cached is used, so an interactive look stays a single call."""
+    if scene:
+        context = (context + "\n\n" if context else "") + "On-device detector, just now: " + scene[:600]
+    first = next((m for m in models if llm._down.get(m.base_url, 0) <= time.time()), None)
+    on_gpu = first is not None and where(first) == "gpu"
+    if SPATIAL.search(question or "") and (on_gpu or frame_key(jpeg) in _captions):
         try:
             cap = await caption(models, jpeg, workspace_id=workspace_id)
             context = (context + "\n\n" if context else "") + "Your own caption of this frame:\n" + caption_text(cap)
@@ -453,8 +627,12 @@ async def look(models: list[llm.Model], jpeg: bytes, question: str, context: str
     content = [{"type": "text", "text": (context + "\n\n" if context else "") + f"Question: {question}"},
                llm.image_part(shrink(jpeg, side_for(models)))]
     fast_task = asyncio.create_task(fast_reading(jpeg, spec))
-    msg, info = await call(models, [{"role": "system", "content": LOOK_PROMPT}, {"role": "user", "content": content}],
-                           workspace_id=workspace_id, kind="look")
+    try:
+        msg, info = await call(models, [{"role": "system", "content": LOOK_PROMPT}, {"role": "user", "content": content}],
+                               workspace_id=workspace_id, kind="look", max_tokens=150, background=background)
+    except BaseException:
+        fast_task.cancel()
+        raise
     raw = msg.get("content") or ""
     out = llm.parse_json(raw)
     status = out.get("status") if out.get("status") in STATUSES else "unsure"
@@ -498,12 +676,15 @@ def judge_reading(step: dict, reading: dict | None) -> tuple[bool | None, str]:
 
 
 async def check_step(models: list[llm.Model], jpeg: bytes, step: dict, index: int, total: int, knowledge: str = "",
-                     *, workspace_id: str = "", roi: dict | None = None) -> dict:
-    content = [{"type": "text", "text": step_context(step, index, total, knowledge)},
-               llm.image_part(shrink(jpeg, side_for(models)))]
+                     *, workspace_id: str = "", roi: dict | None = None, background: bool = False,
+                     scene: str = "") -> dict:
+    text = step_context(step, index, total, knowledge)
+    if scene:
+        text += "\nOn-device detector, just now: " + scene[:600]
+    content = [{"type": "text", "text": text}, llm.image_part(shrink(jpeg, side_for(models)))]
     spec = step.get("reading")
     msg, info = await call(models, [{"role": "system", "content": CHECK_PROMPT}, {"role": "user", "content": content}],
-                           workspace_id=workspace_id, kind="check")
+                           workspace_id=workspace_id, kind="check", max_tokens=220, background=background)
     raw = msg.get("content") or ""
     out = llm.parse_json(raw)
     result = out.get("result") if out.get("result") in RESULTS else "unsure"
@@ -511,7 +692,7 @@ async def check_step(models: list[llm.Model], jpeg: bytes, step: dict, index: in
     reading = _reading(out.get("reading"))
     verified = None
     if spec and result not in ("danger",):
-        v = await read_verified(models, jpeg, spec, roi, workspace_id=workspace_id,
+        v = await read_verified(models, jpeg, spec, roi, workspace_id=workspace_id, background=background,
                                 hint=f"The step needs: {spec.get('label') or 'a reading'} in {spec.get('unit', '')}".strip())
         reading, verified = v["reading"], v["verified"]
         info = {**info, "ms": info["ms"] + v["ms"]}
@@ -530,19 +711,20 @@ async def check_step(models: list[llm.Model], jpeg: bytes, step: dict, index: in
 
 
 async def coach(models: list[llm.Model], jpeg: bytes, goal: str, *, workspace_id: str = "") -> dict:
-    content = [{"type": "text", "text": f"Their goal: {goal}"}, llm.image_part(shrink(jpeg, 768))]
+    content = [{"type": "text", "text": f"Their goal: {goal}"}, llm.image_part(shrink(jpeg, side_for(models)))]
     msg, info = await call(models, [{"role": "system", "content": COACH_PROMPT}, {"role": "user", "content": content}],
-                           workspace_id=workspace_id, kind="coach", max_tokens=200)
+                           workspace_id=workspace_id, kind="coach", max_tokens=200, background=True)
     out = llm.parse_json(msg.get("content") or "")
     status = out.get("status") if out.get("status") in STATUSES else "ok"
     return {"speak": bool(out.get("speak")) and bool(out.get("say")), "say": str(out.get("say") or "")[:400],
             "status": status, "model": info["model"], "where": info["where"], "ms": info["ms"]}
 
 
-async def watch_check(models: list[llm.Model], jpeg: bytes, condition: str, *, workspace_id: str = "") -> dict:
+async def watch_check(models: list[llm.Model], jpeg: bytes, condition: str, *, workspace_id: str = "",
+                      background: bool = True) -> dict:
     content = [{"type": "text", "text": f"Condition: {condition}"}, llm.image_part(shrink(jpeg, min(768, side_for(models))))]
     msg, info = await call(models, [{"role": "system", "content": WATCH_PROMPT}, {"role": "user", "content": content}],
-                           workspace_id=workspace_id, kind="watch", max_tokens=160)
+                           workspace_id=workspace_id, kind="watch", max_tokens=160, background=background)
     out = llm.parse_json(msg.get("content") or "")
     try:
         conf = max(0.0, min(1.0, float(out.get("confidence", 0.6))))
@@ -610,7 +792,7 @@ async def review(models: list[llm.Model], frames: list[tuple[float, bytes]], que
                 lab = f"t={clock(t, t0)}"
                 content += [{"type": "text", "text": lab}, llm.image_part(perception.stamp(f, lab, 256, 60))]
         msg, _ = await call(models, [{"role": "system", "content": SCAN_PROMPT}, {"role": "user", "content": content}],
-                            workspace_id=workspace_id, kind="scan", max_tokens=400)
+                            workspace_id=workspace_id, kind="scan", max_tokens=400, background="wait")
         calls += 1
         for sl in llm.parse_json(msg.get("content") or "").get("slices") or []:
             if isinstance(sl, dict) and sl.get("flag"):
@@ -636,7 +818,7 @@ async def review(models: list[llm.Model], frames: list[tuple[float, bytes]], que
             lab = f"t={clock(t, t0)}"
             content += [{"type": "text", "text": f"Frame {lab}"}, llm.image_part(perception.stamp(f, lab, 448, 70))]
         msg, _info = await call(models, [{"role": "system", "content": REVIEW_PROMPT}, {"role": "user", "content": content}],
-                                workspace_id=workspace_id, kind="review", max_tokens=700)
+                                workspace_id=workspace_id, kind="review", max_tokens=700, background="wait")
         calls += 1
         parts.append(llm.parse_json(msg.get("content") or "") or {"summary": (msg.get("content") or "")[:600]})
         await tick(0.15 + 0.65 * (gi + 1) / len(groups), f"reviewed {min(len(focus), (gi + 1) * 4)} of {len(focus)} frames")
@@ -665,7 +847,7 @@ async def review(models: list[llm.Model], frames: list[tuple[float, bytes]], que
                 content += [{"type": "text", "text": f"Frame {lab}"}, llm.image_part(perception.stamp(f, lab, 448, 70))]
             try:
                 msg, _ = await call(models, [{"role": "system", "content": GATE_PROMPT}, {"role": "user", "content": content}],
-                                    workspace_id=workspace_id, kind="review-gate", max_tokens=400)
+                                    workspace_id=workspace_id, kind="review-gate", max_tokens=400, background="wait")
                 calls += 1
                 g = llm.parse_json(msg.get("content") or "")
                 if isinstance(g.get("keep_problems"), list):

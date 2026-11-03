@@ -16,6 +16,8 @@ export interface VisionStatus {
   active: VisionLink | null;
   last: { model: string; where: "gpu" | "cpu"; ms: number; kind: string; at: number; fallback: boolean } | null;
   cpu_busy: boolean;
+  queue?: number;
+  expected_s?: number;
   perception: { opencv: boolean; ocr: boolean; ocr_error: string };
   gate?: { called: number; skipped: number };
 }

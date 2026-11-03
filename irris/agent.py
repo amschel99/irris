@@ -335,6 +335,7 @@ class Turn:
                  frame: bytes | None = None, loaded: set[str] | None = None):
         self.db, self.ws, self.user_id = db, workspace, user_id
         self.camera_id, self.frame = camera_id, frame
+        self.scene = ""
         self.sources: list[dict] = []
         self.files: list[dict] = []
         self.actions: list[dict] = []
@@ -491,7 +492,11 @@ class Turn:
             models = llm.chain(self.ws, "vlm")
             if not models:
                 return {"error": "no vision model is set up (Settings → Models)"}
-            out = await vision.look(models, frame, str(args.get("question", "")))
+            try:
+                out = await vision.look(models, frame, str(args.get("question", "")), workspace_id=ws_id,
+                                        scene=self.scene)
+            except vision.VisionTimeout as e:
+                return {"error": f"{e}. Tell them what you can from the on-device detector and offer to look again."}
             n = self._cite({"record_id": f"camera:{cam or 'live'}", "ref": f"camera:{cam or 'live'}:{int(time.time())}",
                             "title": "Camera", "type": "camera", "source": "camera", "text": out["say"]})
             return {"cite": f"[{n}]", "say": out["say"], "status": out["status"], "reading": out["reading"]}
@@ -726,7 +731,7 @@ FINAL = ("Answer now with what you have found; you can't use more tools in this 
 
 async def answer(db: Database, workspace: dict, message: str, *, conversation_id: str | None = None,
                  user_id: str = "", camera_id: str = "", frame: bytes | None = None, context: str = "",
-                 emit: Emit = _noop) -> dict:
+                 scene: str = "", emit: Emit = _noop) -> dict:
     """One full turn: plan, use tools, answer. Saves the exchange to the conversation."""
     ws_id = workspace["id"]
     if conversation_id:
@@ -741,6 +746,11 @@ async def answer(db: Database, workspace: dict, message: str, *, conversation_id
         is_new = True
     turn = Turn(db, workspace, user_id=user_id, camera_id=camera_id, frame=frame,
                 loaded=(loaded_tools(db, conversation_id) if not is_new else set()) | preroute(message))
+    turn.scene = scene
+    if scene:
+        context = (context + "\n" if context else "") + (
+            f"[Live camera, the on-device detector sees right now: {scene[:500]}. Use this for quick answers about what "
+            f"they're doing; call look only when you need detail it can't give (a reading, text, a part's state).]")
     started = time.time()
     tools_used: list[str] = []
     meta_extra: dict = {}

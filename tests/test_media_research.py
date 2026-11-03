@@ -44,7 +44,7 @@ def test_verified_reading_never_passes_on_disagreement(signed_in, fake_vision, m
     vision.hub.put(cam["id"], jpeg())
     seq = iter([182, 120, 150])                               # three reads that never agree
 
-    async def flaky(models, image, *, workspace_id, hint="", think=False):
+    async def flaky(models, image, *, workspace_id, hint="", think=False, **kw):
         return {"reading": {"value": float(next(seq)), "unit": "C", "confidence": 0.9}, "box": None,
                 "info": {"model": "m", "where": "gpu", "ms": 5}}
 
@@ -53,7 +53,7 @@ def test_verified_reading_never_passes_on_disagreement(signed_in, fake_vision, m
     assert out["check"]["result"] == "unsure" and out["check"]["verified"] is False and out["run"]["step"] == 0
     seq2 = iter([181, 181.2])                                 # two agreeing, confident reads: verified, the step passes
 
-    async def steady(models, image, *, workspace_id, hint="", think=False):
+    async def steady(models, image, *, workspace_id, hint="", think=False, **kw):
         return {"reading": {"value": float(next(seq2)), "unit": "C", "confidence": 0.9},
                 "box": {"x": .1, "y": .1, "w": .3, "h": .2}, "info": {"model": "m", "where": "gpu", "ms": 5}}
 
@@ -67,7 +67,7 @@ def test_ocr_conflict_makes_a_reading_unsure(monkeypatch):
     from irris import llm, perception, vision
     m = [llm.Model("http://gpu/v1", "", "qwen")]
 
-    async def read(models, image, *, workspace_id, hint="", think=False):
+    async def read(models, image, *, workspace_id, hint="", think=False, **kw):
         return {"reading": {"value": 182.0, "unit": "C", "confidence": 0.9}, "box": None,
                 "info": {"model": "q", "where": "gpu", "ms": 1}}
 

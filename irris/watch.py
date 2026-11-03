@@ -163,13 +163,20 @@ async def check_rule(db: Database, rule: dict, *, force: bool = False) -> dict |
         db.execute("UPDATE watch_rules SET last_check = ? WHERE id = ?", [t, rule["id"]])
         vision.gate_count(ws["id"], False)
         return None
-    out = await vision.watch_check(models, frame, rule["condition"], workspace_id=ws["id"])
+    try:
+        out = await vision.watch_check(models, frame, rule["condition"], workspace_id=ws["id"], background=not force)
+    except vision.VisionBusy:
+        return None
     if th:
         _rule_thumbs[rule["id"]] = th
     matched = out["match"] and out["confidence"] >= 0.5
     if matched and out["confidence"] < 0.75:
         # never alert on one uncertain look: confirm on a sharper image first
-        again = await vision.watch_check(models, vision.shrink(frame, 1024), rule["condition"], workspace_id=ws["id"])
+        try:
+            again = await vision.watch_check(models, vision.shrink(frame, 1024), rule["condition"], workspace_id=ws["id"],
+                                             background=not force)
+        except vision.VisionBusy:
+            return None
         matched = again["match"] and again["confidence"] >= 0.5
         out = {**again, "confirmed": True} if matched else {**out, "say": again["say"] or out["say"], "unconfirmed": True}
     observe.record(db, ws["id"], camera_id=cam["id"], subject=rule["condition"], relation="is true",
@@ -242,7 +249,11 @@ async def _coach_tick(db: Database, row: dict) -> None:
     if not models or (vision.busy_cpu() and all(vision.where(m) == "cpu" for m in models)):
         return
     _coach_last[cid] = (t, th, last_say)
-    out = await vision.coach(models, frame, row["goal"], workspace_id=ws["id"])
+    try:
+        out = await vision.coach(models, frame, row["goal"], workspace_id=ws["id"])
+    except vision.VisionBusy:
+        _coach_last[cid] = (t - 1e9, last_th, last_say)      # try again on the next tick
+        return
     observe.record(db, ws["id"], camera_id=cid, subject="work", relation="coach", value=out["say"] if out["speak"] else "ok",
                    conf=0.6, source="coach", t=t)
     if out["speak"] and out["say"] != last_say:
@@ -270,7 +281,11 @@ async def _notice_tick(db: Database, row: dict) -> None:
     if not models:
         return
     _notice_last[cid] = (t, q)
-    out = await vision.look(models, frame, q, workspace_id=ws["id"])
+    try:
+        out = await vision.look(models, frame, q, workspace_id=ws["id"], background=True)
+    except vision.VisionBusy:
+        _notice_last[cid] = (t, last_q)
+        return
     cam = db.one("SELECT name FROM cameras WHERE id = ?", [cid])
     alerts.push(ws["id"], {"kind": "notice", "camera_id": cid, "camera": cam["name"] if cam else "", "severity": "info",
                            "title": q, "say": out["say"], "speak": True})

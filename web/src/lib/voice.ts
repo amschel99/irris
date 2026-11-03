@@ -3,8 +3,9 @@
 // Speaking: the server's TTS (free Kokoro/Piper, or the workspace's premium voice) played through Web Audio, so the
 // same sound can also feed a recording. If the server can't speak, the browser's speechSynthesis takes over (it
 // can't be recorded, but captions still are).
-// Listening: MediaRecorder clips sent to /voice/stt (Whisper on the server). Where the browser has its own speech
-// recognition, it shows live partial words while you talk.
+// If the server's first sentence takes more than ~2 s (a busy CPU), the browser's voice starts instead.
+// Listening: the browser's own speech recognition first (instant, continuous, with partial words), where there is
+// one (Chrome, Edge, Safari); otherwise MediaRecorder clips sent to /voice/stt (Whisper on the server).
 
 import { getWorkspaceId } from "./api";
 
@@ -45,6 +46,10 @@ export class Speaker {
   onCaption: Caption | null = null;
   onState: ((speaking: boolean) => void) | null = null;
   lastEngine = "";
+  /** What she's saying right now, so the ears can ignore her own voice. */
+  spokenText = "";
+  spokenUntil = 0;
+  firstSentenceMs = 2000;
 
   context(): AudioContext {
     if (!this.ac) {
@@ -82,6 +87,7 @@ export class Speaker {
     if (!sentences.length) return;
     if (opts.interrupt !== false) this.stop();
     this.onCaption?.("irris", sentences.join(" "));
+    this.spokenText = (this.playing ? this.spokenText + " " : "") + sentences.join(" ");
     this.queue.push(...sentences);
     if (!this.playing) this.pump(this.gen);
   }
@@ -103,9 +109,24 @@ export class Speaker {
     this.playing = true;
     this.onState?.(true);
     let next: Promise<AudioBuffer | null> | null = null;
+    let first = true;
     while (this.queue.length && gen === this.gen) {
       const sentence = this.queue.shift()!;
-      const buf = next ? next : this.fetchAudio(sentence);
+      let buf: Promise<AudioBuffer | null> = next ? next : this.fetchAudio(sentence);
+      if (first && !next) {
+        // a busy server must not leave her silent: if the first sentence isn't ready in ~2 s, the browser speaks
+        const slow = new Promise<"slow">((r) => window.setTimeout(() => r("slow"), this.firstSentenceMs));
+        const won = await Promise.race([buf.catch(() => null), slow]);
+        if (won === "slow" && gen === this.gen) {
+          const rest = [sentence, ...this.queue].join(" ");
+          this.queue = [];
+          this.lastEngine = "browser";
+          await this.browserSay(rest, gen);
+          break;
+        }
+        buf = Promise.resolve(won as AudioBuffer | null);
+      }
+      first = false;
       next = this.queue.length ? this.fetchAudio(this.queue[0]).catch(() => null) : null;
       let audio: AudioBuffer | null = null;
       try {
@@ -125,8 +146,20 @@ export class Speaker {
     }
     if (gen === this.gen) {
       this.playing = false;
+      this.spokenUntil = performance.now() + 1500;
       this.onState?.(false);
     }
+  }
+
+  /** True when `heard` is most likely her own voice coming back through the mic. */
+  isEcho(heard: string): boolean {
+    if (!this.playing && performance.now() > this.spokenUntil) return false;
+    const norm = (t: string) => t.toLowerCase().replace(/[^a-z0-9 ]/g, " ").split(/\s+/).filter((w) => w.length > 2);
+    const said = new Set(norm(this.spokenText));
+    const words = norm(heard);
+    if (!words.length) return true;
+    const hit = words.filter((w) => said.has(w)).length;
+    return hit / words.length >= 0.6;
   }
 
   private play(buf: AudioBuffer, gen: number): Promise<void> {
@@ -194,6 +227,10 @@ export async function transcribe(blob: Blob, url = "/api/v1/voice/stt", headers:
   return String(b.text || "").trim();
 }
 
+export function browserRecognition(): any {
+  return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null;
+}
+
 /** Live partial words from the browser's own recogniser, where there is one (Chrome, Edge, Safari). */
 export function partials(onText: (t: string) => void): (() => void) | null {
   const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -240,8 +277,11 @@ export interface HandsFreeOptions {
   onLevel?: (level: number, speaking: boolean) => void;
   onError?: (msg: string) => void;
   onPartial?: (text: string) => void;
+  onMode?: (mode: "browser" | "server") => void;
   sttUrl?: string;
   sttHeaders?: Record<string, string>;
+  /** Use server Whisper even where the browser can recognise speech itself. */
+  serverOnly?: boolean;
 }
 
 /**
@@ -261,6 +301,9 @@ export class HandsFree {
   private clip: { stop: () => Promise<Blob> } | null = null;
   private started = 0;
   private stopPartials: (() => void) | null = null;
+  private rec: any = null;
+  private recFails = 0;
+  mode: "browser" | "server" = "server";
   on = false;
 
   constructor(private opts: HandsFreeOptions) {}
@@ -276,7 +319,74 @@ export class HandsFree {
     src.connect(this.an);
     this.buf = new Float32Array(new ArrayBuffer(1024 * 4));
     this.on = true;
+    const SR = browserRecognition();
+    this.mode = SR && !this.opts.serverOnly ? "browser" : "server";
+    if (this.mode === "browser") this.startRecognition(SR);
+    this.opts.onMode?.(this.mode);
     this.timer = window.setInterval(() => this.tick(), 50);
+  }
+
+  /** The browser's recogniser: continuous, partial words as you talk, the final text the moment you pause. */
+  private startRecognition(SR: any) {
+    try {
+      const rec = new SR();
+      rec.lang = navigator.language || "en-US";
+      rec.interimResults = true;
+      rec.continuous = true;
+      rec.onresult = (e: any) => {
+        let interim = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          const t = String(r[0].transcript || "").trim();
+          if (!t) continue;
+          if (r.isFinal) {
+            if (speaker.isEcho(t)) continue;
+            this.opts.onPartial?.("");
+            if (t.replace(/[^a-z]/gi, "").length > 1) this.opts.onUtterance(t);
+          } else {
+            interim += t + " ";
+          }
+        }
+        interim = interim.trim();
+        if (interim && !speaker.isEcho(interim)) {
+          if (speaker.speaking && interim.split(" ").length >= 2) speaker.stop();      // barge-in
+          this.opts.onPartial?.(interim);
+        }
+      };
+      rec.onerror = (e: any) => {
+        const err = e?.error || "";
+        if (err === "not-allowed" || err === "service-not-allowed" || err === "audio-capture") {
+          this.fallBackToServer();
+        } else if (err !== "no-speech" && err !== "aborted") {
+          this.recFails++;
+        }
+      };
+      rec.onend = () => {
+        // the recogniser stops after a while or after silence: keep listening while hands-free is on
+        if (this.on && this.mode === "browser") {
+          if (this.recFails > 5) return this.fallBackToServer();
+          window.setTimeout(() => {
+            try {
+              if (this.on && this.mode === "browser") rec.start();
+            } catch {
+              /* already starting */
+            }
+          }, 250);
+        }
+      };
+      rec.start();
+      this.rec = rec;
+    } catch {
+      this.fallBackToServer();
+    }
+  }
+
+  private fallBackToServer() {
+    if (this.mode === "server") return;
+    this.mode = "server";
+    try { this.rec?.abort(); } catch { /* stopped */ }
+    this.rec = null;
+    this.opts.onMode?.("server");
   }
 
   get stream() {
@@ -286,6 +396,8 @@ export class HandsFree {
   stop(keepMic = false) {
     this.on = false;
     window.clearInterval(this.timer);
+    try { this.rec?.abort(); } catch { /* stopped */ }
+    this.rec = null;
     this.clip?.stop().catch(() => {});
     this.clip = null;
     this.stopPartials?.();
@@ -306,7 +418,8 @@ export class HandsFree {
     const threshold = Math.max(0.012, this.floor * (busy ? 4.5 : 2.6));
     const loud = rms > threshold;
     if (!this.clip && !loud) this.floor = this.floor * 0.97 + rms * 0.03;
-    this.opts.onLevel?.(Math.min(1, rms / 0.12), !!this.clip);
+    this.opts.onLevel?.(Math.min(1, rms / 0.12), !!this.clip || (this.mode === "browser" && loud));
+    if (this.mode === "browser") return;          // the browser's recogniser does the listening
     if (loud) {
       this.speech++;
       this.silence = 0;

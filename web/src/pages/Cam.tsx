@@ -5,6 +5,7 @@ import { RecordingPreview } from "../components/media";
 import { Mark, Spinner } from "../components/ui";
 import { grabJpeg, keepAwake, openCamera, stopCamera } from "../lib/camera";
 import { uploadRecording } from "../lib/media";
+import { drawScene, mediaRect, Perceiver, type Scene } from "../lib/perceive";
 import { canRecord, LiveRecorder, mmss, type Overlay } from "../lib/recorder";
 import { errText, useInterval } from "../lib/util";
 import { pref, setPref, speaker } from "../lib/voice";
@@ -41,6 +42,10 @@ export function Cam() {
   const recMic = useRef<MediaStream | null>(null);
   const talkRef = useRef(talk);
   talkRef.current = talk;
+  const perceiver = useRef<Perceiver | null>(null);
+  const layer = useRef<HTMLCanvasElement>(null);
+  const [scene, setScene] = useState<Scene | null>(null);
+  const [reading, setReading] = useState<{ text: string; t: number } | null>(null);
 
   // her voice on this phone comes from the workspace's TTS, through the pairing token
   useEffect(() => {
@@ -92,6 +97,8 @@ export function Cam() {
             setStep(m.next);
             window.setTimeout(() => talkRef.current && speaker.say(`Next. ${m.next}`, { interrupt: false }), 300);
           }
+        } else if (m.type === "reading" || m.type === "text") {
+          setReading({ text: m.type === "reading" ? `DISPLAY ${m.value} ${m.unit || ""}`.trim() : `TEXT “${String(m.text || "").slice(0, 40)}”`, t: Date.now() });
         } else if (m.type === "alert") {
           show({ kind: "alert", tone: m.severity, head: `${String(m.kind).toUpperCase()}${m.severity === "danger" ? " · DANGER" : ""}`, text: m.say || m.title });
         }
@@ -129,6 +136,34 @@ export function Cam() {
       setState("idle");
     }
   };
+
+  // the fast layer on the phone itself: objects and hands, drawn live
+  useEffect(() => {
+    const el = video.current;
+    if (state !== "live" || !el || !pref("detect", true)) {
+      perceiver.current?.stop();
+      setScene(null);
+      return;
+    }
+    let gone = false;
+    const p = perceiver.current || (perceiver.current = new Perceiver());
+    p.maxFps = 12;
+    let lastUi = 0;
+    p.onScene = (sc) => {
+      if (layer.current) drawScene(layer.current, sc, mediaRect(el), facing === "user");
+      const now = performance.now();
+      if (now - lastUi > 300) {
+        lastUi = now;
+        setScene(sc);
+      }
+    };
+    p.init().then((ok) => !gone && ok && p.start(el));
+    return () => {
+      gone = true;
+      p.stop();
+    };
+  }, [state, facing]);
+  useEffect(() => () => perceiver.current?.close(), []);
 
   const pause = () => {
     if (rec.current?.recording) toggleRecord();
@@ -229,6 +264,7 @@ export function Cam() {
   return (
     <div className="camera-page page-rec">
       <video ref={video} playsInline muted autoPlay style={{ opacity: state === "live" ? 1 : 0, transform: facing === "user" ? "scaleX(-1)" : undefined }} />
+      {state === "live" && <canvas ref={layer} className="perceive-layer" aria-hidden="true" />}
       <div className="top">
         <Mark size={18} />
         <span style={{ fontWeight: 600, letterSpacing: "0.3em", fontSize: 12 }}>IRRIS</span>
@@ -241,6 +277,12 @@ export function Cam() {
       </div>
       <div className="bottom">
         {info && <div className="mono" style={{ fontSize: 11, color: "#A3A3A8", letterSpacing: "0.06em" }}>{info.workspace.toUpperCase()} · {info.name.toUpperCase()}</div>}
+        {state === "live" && (scene || reading) && (
+          <div className="sense" style={{ justifyContent: "center" }} role="status">
+            {scene && <span className="act">{scene.activity.toUpperCase()}</span>}
+            {reading && Date.now() - reading.t < 6000 && <span className="read">{reading.text} · OCR</span>}
+          </div>
+        )}
         {state === "live" && said.length > 0 && (
           <div className="stack sm" style={{ alignItems: "center", width: "100%" }} aria-live="polite">
             {said.slice(-2).map((s) => (

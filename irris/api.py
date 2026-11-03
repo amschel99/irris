@@ -14,6 +14,7 @@ from irris import agent, auth, connectors, irf, llm, runs, store, vision
 from irris.auth import Ctx, ctx
 from irris.config import settings
 from irris.db import dumps, get_db, loads, new_id, now
+from irris.cancel import unless_gone
 from irris.security import encrypt, sha256, token
 
 router = APIRouter(prefix="/api/v1")
@@ -603,7 +604,8 @@ async def ask(request: Request, c: Ctx = Depends(ctx)):
         except store.NotFound:
             pass
     kwargs = dict(conversation_id=b.get("conversation_id") or None, user_id=c.user_id, camera_id=camera_id,
-                  frame=vision.hub.get(camera_id) if camera_id else None, context=run_ctx)
+                  frame=vision.hub.get(camera_id) if camera_id else None, context=run_ctx,
+                  scene=str(b.get("scene") or "")[:800])
     if not b.get("stream"):
         try:
             return await agent.answer(c.db, c.workspace, message, **kwargs)
@@ -783,7 +785,13 @@ async def camera_look(camera_id: str, request: Request, c: Ctx = Depends(ctx)):
     if not models:
         raise HTTPException(400, "no vision model is set up (Settings → Models)")
     try:
-        return await vision.look(models, frame, str(b.get("question") or "What do you see?"))
+        return await unless_gone(request, vision.look(models, frame, str(b.get("question") or "What do you see?"),
+                                                      workspace_id=c.ws_id, scene=str(b.get("scene") or ""),
+                                                      background=bool(b.get("background"))))
+    except vision.VisionBusy as e:
+        raise HTTPException(409, str(e))
+    except vision.VisionTimeout as e:
+        raise HTTPException(504, str(e))
     except llm.ModelError as e:
         raise HTTPException(502, str(e))
 
@@ -837,9 +845,12 @@ async def check_run(run_id: str, request: Request, c: Ctx = Depends(ctx)):
         frame = await agent.camera_frame(c.db, c.ws_id, cam)
         if frame is None:
             raise HTTPException(409, "no live camera frame to check. Start the camera first.")
-        return await runs.vision_check(c.db, c.workspace, run_id, frame)
+        return await unless_gone(request, runs.vision_check(c.db, c.workspace, run_id, frame,
+                                                            scene=str(b.get("scene") or "")))
     except (store.NotFound, runs.RunError, ValueError) as e:
         raise _err(e)
+    except vision.VisionTimeout as e:
+        raise HTTPException(504, str(e))
     except llm.ModelError as e:
         raise HTTPException(502, str(e))
 

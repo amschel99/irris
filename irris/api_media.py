@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from starlette.websockets import WebSocketDisconnect
 
 from irris import agent, auth, llm, observe, perception, runs, store, vision, voice, watch
+from irris.cancel import unless_gone
 from irris.auth import Ctx, ctx
 from irris.db import dumps, get_db, loads, new_id, now
 from irris.security import sha256
@@ -51,7 +52,9 @@ def vision_status(c: Ctx = Depends(ctx)):
                       "source": "cpu fallback" if vision.where(m) == "cpu" else ("workspace" if own else "server")})
     active = next((x for x in chain if not x["down"]), None)
     return {"ready": bool(chain), "chain": chain, "active": active, "last": vision.stats(c.ws_id),
-            "cpu_busy": vision.busy_cpu(), "perception": perception.status(), "gate": vision.gate_stats(c.ws_id)}
+            "cpu_busy": vision.busy_cpu(), "queue": vision.queue_depth(),
+            "expected_s": vision.expected_seconds(llm.chain(c.workspace, "vlm")),
+            "perception": perception.status(), "gate": vision.gate_stats(c.ws_id)}
 
 
 # ================================================================ voice
@@ -346,7 +349,10 @@ async def autocheck(run_id: str, request: Request, c: Ctx = Depends(ctx)):
     if frame is None:
         raise HTTPException(409, "no live camera frame to check")
     try:
-        return await runs.vision_check(c.db, c.workspace, run_id, frame, gated=True)
+        return await unless_gone(request, runs.vision_check(c.db, c.workspace, run_id, frame, gated=True,
+                                                            scene=str((b or {}).get("scene") or "")))
+    except vision.VisionBusy:
+        return {"check": {"result": "busy", "say": "", "reading": None, "skipped": True}, "run": s}
     except runs.RunError as e:
         raise HTTPException(400, str(e))
     except llm.ModelError as e:

@@ -147,3 +147,20 @@
 /* on the phone the clip preview sits under the status bar, so Pause and Record stay reachable */
 .camera-page .rec-preview { position: fixed; top: calc(env(safe-area-inset-top) + 56px); bottom: auto; left: 10px; right: 10px; width: auto; }
 .camera-page .rec-preview video { position: static; inset: auto; width: 100%; height: auto; max-height: 34vh; object-fit: contain; opacity: 1 !important; transform: none !important; }
+
+/* ---- the fast layer: on-device detections, what Irris notices, live readings ---- */
+.perceive-layer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 1; }
+.sense { display: flex; flex-wrap: wrap; gap: 6px; max-width: 100%; }
+.sense > span {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; line-height: 1.3;
+  padding: 5px 8px; border-radius: 4px; background: rgba(5, 5, 6, 0.72); color: #E9E9E6;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sense > span svg { width: 13px; height: 13px; flex: none; }
+.sense .act { color: var(--lime); }
+.sense .read { color: #0A0A0B; background: var(--lime); }
+.sense .look { color: #E9E9E6; }
+.sense .look .spinner { width: 11px; height: 11px; }
+.sense .heard { color: #E9E9E6; font-family: var(--sans); font-size: 13px; letter-spacing: 0; white-space: normal; }
+@media (max-width: 640px) { .sense > span { font-size: 10px; } }

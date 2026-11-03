@@ -1,6 +1,6 @@
 import {
   AlertTriangle, Aperture, Camera as CamIcon, Check, ChevronLeft, CircleStop, Crop, Gauge, History, Mic, MonitorUp,
-  MoreHorizontal, Play, ScanLine, SkipForward, Sparkles, Video, Volume2, VolumeX, X,
+  MoreHorizontal, Play, ScanLine, ScanEye, SkipForward, Sparkles, Video, Volume2, VolumeX, X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
@@ -14,6 +14,7 @@ import { canRecord, canRecordScreen, LiveRecorder, mmss, type Overlay, type RecM
 import { useSession } from "../lib/session";
 import type { Camera, Measured, Procedure, Run } from "../lib/types";
 import { deviceName, duration, errText, num, useInterval, useLoad } from "../lib/util";
+import { drawScene, Perceiver, sceneSentence, type Scene, type SceneEvent } from "../lib/perceive";
 import { HandsFree, parseCommand, pref, setPref, speaker } from "../lib/voice";
 import { Composer, Thinking, useAsk } from "./Ask";
 
@@ -73,12 +74,32 @@ function specText(r?: { min?: number; max?: number; unit?: string; label?: strin
   return "";
 }
 
+function lookError(e: unknown): string {
+  const t = errText(e);
+  if (/in time|timeout|504/i.test(t)) return "I couldn't see in time. The vision model is slow on the server's CPU right now; try again, or mark the step by hand.";
+  if (/busy/i.test(t)) return "I'm still looking at the last thing. Give me a moment.";
+  return t;
+}
+
 const secs = (ms?: number) => (ms === undefined ? "" : ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${ms} ms`);
 
-/** Streams this device's camera: a WebSocket when it can, HTTP POSTs when it can't. */
-function useFrameSender(cameraId: string, active: boolean, video: React.RefObject<HTMLVideoElement>) {
+export interface LiveMsg {
+  type: string;
+  value?: number;
+  unit?: string;
+  text?: string;
+  confidence?: number;
+  t?: number;
+}
+
+/** The camera's WebSocket. This device: its frames go up (HTTP POSTs when the socket can't open). Any camera: live
+ * readings (OCR of displays), verdicts and alerts come down. */
+function useCameraFeed(cameraId: string, active: boolean, video: React.RefObject<HTMLVideoElement>, send: boolean,
+                       onMessage: (m: LiveMsg) => void) {
   const ws = useRef<WebSocket | null>(null);
   const [mode, setMode] = useState<"ws" | "http" | "">("");
+  const handler = useRef(onMessage);
+  handler.current = onMessage;
   useEffect(() => {
     if (!active || !cameraId) return;
     let closed = false;
@@ -86,6 +107,14 @@ function useFrameSender(cameraId: string, active: boolean, video: React.RefObjec
     try {
       const sock = new WebSocket(`${proto}://${location.host}/api/v1/cam/ws?camera=${cameraId}&ws=${encodeURIComponent(getWorkspaceId())}`);
       sock.binaryType = "arraybuffer";
+      sock.onmessage = (e) => {
+        if (typeof e.data !== "string") return;
+        try {
+          handler.current(JSON.parse(e.data));
+        } catch {
+          /* not JSON */
+        }
+      };
       sock.onopen = () => !closed && setMode("ws");
       sock.onclose = () => { if (!closed) setMode("http"); ws.current = null; };
       sock.onerror = () => !closed && setMode("http");
@@ -102,7 +131,7 @@ function useFrameSender(cameraId: string, active: boolean, video: React.RefObjec
   }, [cameraId, active]);
 
   useInterval(async () => {
-    if (!active || !cameraId || !video.current) return;
+    if (!send || !active || !cameraId || !video.current) return;
     const blob = await grabJpeg(video.current);
     if (!blob) return;
     const sock = ws.current;
@@ -111,9 +140,11 @@ function useFrameSender(cameraId: string, active: boolean, video: React.RefObjec
       return;
     }
     api(`/cameras/${cameraId}/frame`, { method: "POST", body: blob, headers: { "Content-Type": "image/jpeg" } }).catch(() => {});
-  }, active && cameraId ? 1000 : null);
+  }, send && active && cameraId ? 1000 : null);
   return mode;
 }
+
+const VISUAL = /\b(see|look|looking|camera|holding|doing|this|that|these|those|here|read|reading|display|gauge|right|wrong|correct)\b/i;
 
 export function Live() {
   const { workspace, toast } = useSession();
@@ -164,6 +195,20 @@ export function Live() {
   const [level, setLevel] = useState(0);
   const handsRef = useRef<HandsFree | null>(null);
 
+  // the fast layer: on-device detection, live readings, narration
+  const perceiver = useRef<Perceiver | null>(null);
+  const overlayCanvas = useRef<HTMLCanvasElement>(null);
+  const sceneRef = useRef<Scene | null>(null);
+  const [scene, setScene] = useState<Scene | null>(null);
+  const [detect, setDetect] = useState(() => pref("detect", true));
+  const [detectError, setDetectError] = useState("");
+  const [narrate, setNarrate] = useState(() => pref("narrate", true));
+  const [liveRead, setLiveRead] = useState<LiveMsg | null>(null);
+  const [looking, setLooking] = useState<{ since: number; what: string } | null>(null);
+  const [lookClock, setLookClock] = useState(0);
+  const narrated = useRef<{ text: string; at: number; lookAt: number }>({ text: "", at: 0, lookAt: 0 });
+  const autoHands = useRef(false);
+
   const [recMode, setRecMode] = useState<"view" | "camera">(() => (pref("recView", true) ? "view" : "camera"));
   const [recording, setRecording] = useState(false);
   const [recClock, setRecClock] = useState(0);
@@ -176,7 +221,11 @@ export function Live() {
   const cameraList = cams.data?.cameras || [];
   const remote = cameraList.find((c) => c.id === source);
   const live = source === DEVICE ? streaming : !!remote && (remote.kind === "url" || imgOk || !!remote.live);
-  const sendMode = useFrameSender(deviceCam, source === DEVICE && streaming, videoRef);
+  const onLive = useCallback((m: LiveMsg) => {
+    if (m.type === "reading" || m.type === "text") setLiveRead({ ...m, t: Date.now() });
+  }, []);
+  const sendMode = useCameraFeed(cameraId, live && source !== GRID, videoRef, source === DEVICE && streaming, onLive);
+  const expected = vstatus?.expected_s || (vstatus?.active?.where === "gpu" ? 3 : 30);
 
   const caption = useCallback((who: Cap["who"], text: string) => {
     if (!text.trim()) return;
@@ -310,7 +359,8 @@ export function Live() {
     if (!run || run.status !== "active" || checking) return;
     setChecking(true);
     try {
-      const out = await post<{ check: Verdict; run: Run }>(`/runs/${run.id}/check`, { camera_id: cameraId || undefined });
+      setLooking({ since: Date.now(), what: "Checking the step" });
+      const out = await post<{ check: Verdict; run: Run }>(`/runs/${run.id}/check`, { camera_id: cameraId || undefined, scene: sceneRef.current?.summary });
       announce({ ...out.check, at: Date.now() });
       const advanced = out.run.step !== run.step || out.run.status !== run.status;
       setRun(out.run);
@@ -318,9 +368,10 @@ export function Live() {
       if (out.run.status === "done") window.setTimeout(() => say("That's the last step. The batch record is written."), 1600);
     } catch (e) {
       setAuto(false);
-      announce({ result: "unsure", say: errText(e), reading: null, at: Date.now() });
+      announce({ result: "unsure", say: lookError(e), reading: null, at: Date.now() });
     } finally {
       setChecking(false);
+      setLooking(null);
     }
   }, [run, checking, cameraId, announce, say]);
 
@@ -328,8 +379,8 @@ export function Live() {
     if (!run || run.status !== "active" || checking) return;
     setChecking(true);
     try {
-      const out = await post<{ check: Verdict & { skipped?: boolean }; run: Run }>(`/runs/${run.id}/check/auto`, { camera_id: cameraId || undefined });
-      if (out.check.skipped) return;                 // nothing changed in view: no model call, nothing to say
+      const out = await post<{ check: Verdict & { skipped?: boolean }; run: Run }>(`/runs/${run.id}/check/auto`, { camera_id: cameraId || undefined, scene: sceneRef.current?.summary });
+      if (out.check.skipped) return;                 // nothing changed in view, or the model is busy: try next time
       announce({ ...out.check, at: Date.now() });
       const advanced = out.run.step !== run.step || out.run.status !== run.status;
       setRun(out.run);
@@ -381,13 +432,24 @@ export function Live() {
 
   const sendChat = useCallback(async (text: string, spoken = false) => {
     caption("you", text);
-    const res = await chat.send(text, { camera_id: cameraId || undefined, run_id: run?.id }, conv);
-    if (res?.conversation_id) setConv(res.conversation_id);
-    if (res?.reply) {
-      if (spoken || voice || hands) speaker.say(res.reply);
-      else caption("irris", res.reply);
+    const visual = !!cameraId && live && VISUAL.test(text);
+    if (visual && (spoken || voice || hands)) {
+      // an instant first answer from the on-device detector while the server takes a proper look
+      const quick = sceneSentence(sceneRef.current);
+      speaker.say(quick ? `${quick}. Let me take a closer look.` : "Let me take a look.");
     }
-  }, [chat, cameraId, run?.id, conv, caption, voice, hands]);
+    if (visual) setLooking({ since: Date.now(), what: "Looking" });
+    try {
+      const res = await chat.send(text, { camera_id: cameraId || undefined, run_id: run?.id, scene: sceneRef.current?.summary }, conv);
+      if (res?.conversation_id) setConv(res.conversation_id);
+      if (res?.reply) {
+        if (spoken || voice || hands) speaker.say(res.reply);
+        else caption("irris", res.reply);
+      }
+    } finally {
+      if (visual) setLooking(null);
+    }
+  }, [chat, cameraId, run?.id, conv, caption, voice, hands, live]);
 
   // ---------------------------------------------------------------- tools on the camera
   const saveCamState = async (body: Partial<CameraState>) => {
@@ -413,6 +475,7 @@ export function Live() {
   const readNow = async () => {
     if (!cameraId) return;
     setChecking(true);
+    setLooking({ since: Date.now(), what: "Reading" });
     try {
       const out = await post<{ say: string; reading: Verdict["reading"]; status: string; where?: "gpu" | "cpu"; ms?: number }>(
         `/cameras/${cameraId}/read`, { what: current?.reading?.label || "the instrument in view", spec: current?.reading });
@@ -422,9 +485,10 @@ export function Live() {
         if (out.reading.unit) setUnit(out.reading.unit);
       }
     } catch (e) {
-      toast(errText(e), true);
+      toast(lookError(e), true);
     } finally {
       setChecking(false);
+      setLooking(null);
     }
   };
 
@@ -439,6 +503,95 @@ export function Live() {
       toast(errText(e), true);
     }
   };
+
+  // ---------------------------------------------------------------- the fast layer: on-device detection
+  useEffect(() => {
+    const el = source === DEVICE ? videoRef.current : imgRef.current;
+    if (!detect || !live || source === GRID || !el) {
+      perceiver.current?.stop();
+      sceneRef.current = null;
+      setScene(null);
+      const cv = overlayCanvas.current;
+      if (cv) cv.getContext("2d")?.clearRect(0, 0, cv.width, cv.height);
+      return;
+    }
+    let gone = false;
+    const p = perceiver.current || (perceiver.current = new Perceiver());
+    let lastUi = 0;
+    p.onScene = (sc) => {
+      sceneRef.current = sc;
+      const cv = overlayCanvas.current;
+      if (cv) drawScene(cv, sc, contentRect(el), source === DEVICE && facing === "user");
+      const now = performance.now();
+      if (now - lastUi > 250) {
+        lastUi = now;
+        setScene(sc);
+      }
+    };
+    p.init().then((ok) => {
+      if (gone) return;
+      if (!ok) {
+        setDetectError(p.error);
+        return;
+      }
+      setDetectError("");
+      p.start(el);
+    });
+    return () => {
+      gone = true;
+      p.stop();
+    };
+  }, [detect, live, source, facing, imgOk, streaming]);
+  useEffect(() => () => perceiver.current?.close(), []);
+
+  // narration: the detector notices what changed; Irris says something short only when it's useful
+  const narrateRef = useRef<(e: SceneEvent) => void>(() => {});
+  narrateRef.current = (e: SceneEvent) => {
+    if (!narrate || !(voice || hands)) return;
+    const now = Date.now();
+    const n = narrated.current;
+    const line = e.kind === "picked" ? `You've got the ${e.label}.` : e.kind === "put-down" ? `Put the ${e.label} down.` : "";
+    if (line && line !== n.text && now - n.at > 8000 && !speaker.speaking) {
+      n.text = line;
+      n.at = now;
+      speaker.say(line, { interrupt: false });
+    }
+    // a pause after work, or a new tool: one cheap look (skipped if the vision model is busy), spoken only if it matters
+    const worth = e.kind === "paused" || e.kind === "picked";
+    if (worth && cameraId && vlmReady && now - n.lookAt > 45000 && !checking) {
+      n.lookAt = now;
+      post<{ say: string; status: string }>(`/cameras/${cameraId}/look`, {
+        question: current
+          ? `They are on step ${run!.step + 1}: ${current.instruction}. In one short sentence: is what they're doing right, or is something off?`
+          : "In one short sentence: what is the person doing, and is anything wrong or unsafe?",
+        scene: sceneRef.current?.summary,
+        background: true,
+      }).then((out) => {
+        if (!out?.say) return;
+        const useful = out.status === "warning" || out.status === "danger" || e.kind === "paused";
+        if (useful && out.say !== narrated.current.text) {
+          narrated.current.text = out.say;
+          narrated.current.at = Date.now();
+          if (voice || hands) speaker.say(out.say, { interrupt: false });
+          else caption("irris", out.say);
+        }
+      }).catch(() => { /* busy or slow: stay quiet */ });
+    }
+  };
+  useEffect(() => {
+    const p = perceiver.current;
+    if (p) p.onEvent = (e) => narrateRef.current(e);
+  }, [scene !== null]);
+
+  // hands-free by default: once a camera is live, Irris listens (turn it off and it stays off)
+  useEffect(() => {
+    if (!live || source === GRID || handsRef.current || autoHands.current || !pref("handsFree", true)) return;
+    autoHands.current = true;
+    toggleHands(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live, source]);
+
+  useInterval(() => setLookClock(looking ? Math.round((Date.now() - looking.since) / 1000) : 0), looking ? 1000 : null);
 
   // ---------------------------------------------------------------- the reading area (ROI) for this step or camera
   const roiKey = run && run.status === "active" ? `${run.procedure.id}:${run.step}` : "default";
@@ -491,26 +644,33 @@ export function Live() {
   const uttRef = useRef(onUtterance);
   uttRef.current = onUtterance;
 
-  const toggleHands = async () => {
+  const [partial, setPartial] = useState("");
+  const [earMode, setEarMode] = useState<"browser" | "server" | "">("");
+  const toggleHands = async (auto = false) => {
     if (handsRef.current) {
       handsRef.current.stop();
       handsRef.current = null;
       setHands(false);
       setLevel(0);
+      setPartial("");
+      setPref("handsFree", false);
       return;
     }
     const h = new HandsFree({
       onUtterance: (t) => uttRef.current(t),
       onLevel: (l) => setLevel(l),
       onError: (m) => toast(m, true),
+      onPartial: (t) => setPartial(t),
+      onMode: (m) => setEarMode(m),
     });
     try {
       await h.start();
       handsRef.current = h;
       setHands(true);
-      speaker.say(current ? `I'm listening. Step ${run!.step + 1}. ${current.instruction}` : "I'm listening. Say check, pass, or ask me anything.");
+      if (!auto) setPref("handsFree", true);
+      speaker.say(current ? `I'm listening. Step ${run!.step + 1}. ${current.instruction}` : "I'm listening. Ask me anything, or show me what you're working on.");
     } catch (e) {
-      toast(errText(e), true);
+      if (!auto) toast(errText(e), true);
     }
   };
 
@@ -636,11 +796,11 @@ export function Live() {
                 {recording ? mmss(recClock) : <><Video /> <span className="desktop-only">Record</span></>}
               </button>
             )}
-            <button className={`btn sm voice-btn${hands ? " on" : ""}`} onClick={toggleHands} aria-pressed={hands} aria-label={hands ? "Stop listening" : "Talk hands-free"} title={hands ? "Listening: say check, pass, or ask anything" : "Talk hands-free"}>
+            <button className={`btn sm voice-btn${hands ? " on" : ""}`} onClick={() => toggleHands()} aria-pressed={hands} aria-label={hands ? "Stop listening" : "Talk hands-free"} title={hands ? "Listening: say check, pass, or ask anything" : "Talk hands-free"}>
               {hands ? (
                 <span className="level" aria-hidden="true">{[0.5, 1, 0.7].map((k, i) => <i key={i} style={{ height: `${4 + Math.min(10, level * 14 * k)}px` }} />)}</span>
               ) : <Mic />}
-              <span className="desktop-only">{hands ? "Listening" : "Voice"}</span>
+              <span className="desktop-only">{hands ? (earMode === "server" ? "Listening · server" : "Listening") : "Voice"}</span>
             </button>
             <button className="btn sm icon" onClick={() => { const v = !voice; setVoice(v); setPref("speakVerdicts", v); if (!v) speaker.stop(); }} aria-label={voice ? "Mute Irris" : "Let Irris speak"} title={voice ? "Irris speaks verdicts" : "Irris is muted"}>
               {voice ? <Volume2 /> : <VolumeX />}
@@ -672,6 +832,12 @@ export function Live() {
                   <hr />
                 </>
               )}
+              <label className="item"><ScanEye /> <span>On-device detection<small>{detectError ? detectError : "Objects and hands, live, on this device"}</small></span>
+                <Toggle on={detect} onChange={(v) => { setDetect(v); setPref("detect", v); }} label="On-device detection" />
+              </label>
+              <label className="item"><Sparkles /> <span>Narrate<small>Speaks up when you pick something up or pause</small></span>
+                <Toggle on={narrate} onChange={(v) => { setNarrate(v); setPref("narrate", v); }} label="Narrate" />
+              </label>
               <label className="item"><Video /> <span>Record what you see<small>{recMode === "view" ? "Camera, steps, verdicts, captions and voices" : "Camera and mic only"}</small></span>
                 <Toggle on={recMode === "view"} onChange={(v) => { setRecMode(v ? "view" : "camera"); setPref("recView", v); }} label="Record what you see" />
               </label>
@@ -704,7 +870,7 @@ export function Live() {
                   <div className="stage-off">
                     <CamIcon />
                     <h2>Use this device's camera</h2>
-                    <p>Point it at the work. Irris sees one frame a second, checks each step against your procedure, and talks you through it.</p>
+                    <p>Point it at the work. Irris spots objects and hands live on this device, reads displays, checks each step against your procedure, and talks you through it.</p>
                     {camError && <div className="error-box" style={{ textAlign: "left" }}>{camError}</div>}
                     <div className="row wrap" style={{ justifyContent: "center" }}>
                       <button className="btn primary" onClick={() => startDevice()}><Play /> Start camera</button>
@@ -736,6 +902,7 @@ export function Live() {
             ) : (
               cams.loading && <Loading />
             )}
+            {live && source !== GRID && detect && <canvas ref={overlayCanvas} className="perceive-layer" aria-hidden="true" />}
             {live && source !== GRID && (
               <div className={`reticle${checking ? " checking" : ""}${verdict && ["fail", "danger"].includes(verdict.result) ? " fail" : ""}`} aria-hidden="true">
                 <i /><i /><i /><i />
@@ -785,6 +952,16 @@ export function Live() {
 
           {source !== GRID && (
             <div className="hud">
+              {live && (scene || liveRead || looking || partial) && (
+                <div className="sense" role="status" aria-live="polite">
+                  {looking && <span className="look"><Spinner /> {looking.what.toUpperCase()}… {lookClock} S · USUALLY ~{expected} S {vstatus?.active?.where === "gpu" ? "ON GPU" : "ON CPU"}</span>}
+                  {scene && <span className="act"><ScanEye /> {scene.activity.toUpperCase()}{scene.fps ? ` · ${scene.fps} FPS` : ""}</span>}
+                  {liveRead && Date.now() - (liveRead.t || 0) < 6000 && (
+                    <span className="read">{liveRead.type === "reading" ? `DISPLAY ${num(liveRead.value || 0)} ${liveRead.unit || ""}` : `TEXT “${(liveRead.text || "").slice(0, 48)}”`} · OCR</span>
+                  )}
+                  {partial && <span className="heard">“{partial}”</span>}
+                </div>
+              )}
               {current && (
                 <span className="hud-step">
                   STEP {run!.step + 1}/{run!.steps.length} · {checking ? "CHECKING…" : current.reading ? `READ ${specText(current.reading)}` : "WATCHING"}
