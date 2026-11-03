@@ -1,4 +1,5 @@
 import QRCode from "qrcode";
+import { StatusLine, type StatusInfo } from "../components/Status";
 import { Eye, FileVideo, Link2, Plus, RefreshCw, ScanLine, Smartphone, Trash2, Video } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -307,6 +308,9 @@ export function Cameras() {
                   <button className="btn sm icon danger" aria-label={`Remove ${c.name}`} onClick={() => remove(c)}><Trash2 /></button>
                 </div>
               </div>
+              {(c as { status_info?: StatusInfo }).status_info && !["live", "ok", "on_demand"].includes((c as { status_info?: StatusInfo }).status_info!.state) && (
+                <StatusLine info={(c as { status_info?: StatusInfo }).status_info} />
+              )}
               {openWatch === c.id && <WatchPanel cam={c} />}
             </div>
           </article>

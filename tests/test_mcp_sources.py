@@ -72,6 +72,11 @@ def test_connect_call_save_and_sync(signed_in, erp):
     sync = c.post(f"/api/v1/mcp-servers/{s['id']}/syncs", json={"resource": "erp://stock", "type": "stock",
                                                                 "every_minutes": 1}).json()
     assert sync["every_minutes"] == 5                                   # at least 5 minutes
+    assert sync["status_info"]["state"] == "awaiting_approval"
+    blocked = c.post(f"/api/v1/mcp-servers/{s['id']}/syncs/{sync['id']}/run").json()
+    assert blocked["status"].startswith("waiting for approval")         # it writes records: an admin approves first
+    ok = c.post(f"/api/v1/mcp-servers/{s['id']}/syncs/{sync['id']}/approve").json()
+    assert ok["approved"] and ok["status_info"]["state"] == "scheduled"
     out = c.post(f"/api/v1/mcp-servers/{s['id']}/syncs/{sync['id']}/run").json()
     assert out["status"].startswith("ok: 1 new")
     assert c.get("/api/v1/records", params={"type": "stock"}).json()["total"] == 1

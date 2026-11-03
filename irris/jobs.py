@@ -35,10 +35,13 @@ class Retry(Exception):
 
 
 def job_api(row: dict) -> dict:
-    return {"id": row["id"], "kind": row["kind"], "status": row["status"], "title": row["title"],
+    out = {"id": row["id"], "kind": row["kind"], "status": row["status"], "title": row["title"],
             "progress": round(float(row["progress"] or 0), 4), "message": row["message"], "error": row["error"],
             "result": loads(row["result"], {}), "payload": loads(row["payload"], {}), "attempts": row["attempts"],
             "created": row["created"], "updated": row["updated"], "started": row["started"], "finished": row["finished"]}
+    from irris import ops
+    out["status_info"] = ops.job_status(out)
+    return out
 
 
 def enqueue(db: Database, workspace_id: str, kind: str, payload: dict | None = None, *, title: str = "",

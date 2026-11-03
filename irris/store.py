@@ -68,6 +68,10 @@ def write(db: Database, workspace_id: str, records: list[dict],
     if updated:
         _embed_changed(workspace_id)
     after_write(db, workspace_id, types)
+    if ids:
+        from irris import ops
+        ops.emit(db, workspace_id, "records.written", "", {"created": created, "updated": updated, "types": sorted(types),
+                                                          "ids": ids[:200], "more_ids": max(0, len(ids) - 200)})
     return {"created": created, "updated": updated, "ids": ids}
 
 

@@ -1,4 +1,5 @@
 import { Play, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { StatusLine, type StatusInfo } from "./Status";
 import { useState } from "react";
 import { Code, Empty, ErrorBox, Field, Loading, Modal, Spinner } from "./ui";
 import { del, get, post } from "../lib/api";
@@ -7,10 +8,10 @@ import { ago, errText, useLoad } from "../lib/util";
 
 type Tool = { name: string; description: string; inputSchema: { properties?: Record<string, { type?: string; description?: string }> } };
 type Sync = { id: string; tool: string; resource: string; arguments: Record<string, unknown>; every_minutes: number;
-  type: string; last_run: number | null; last_status: string; next_run: number };
+  type: string; last_run: number | null; last_status: string; next_run: number; approved?: boolean; status_info?: StatusInfo };
 type Server = { id: string; name: string; url: string; status: string; last_sync: number | null; has_auth: boolean;
   server: { name?: string; title?: string; version?: string }; tools: Tool[];
-  resources: { uri: string; name: string; mimeType: string }[]; syncs: Sync[] };
+  resources: { uri: string; name: string; mimeType: string }[]; syncs: Sync[]; status_info?: StatusInfo };
 
 const EVERY = [[5, "5 min"], [15, "15 min"], [60, "hour"], [360, "6 hours"], [1440, "day"]] as const;
 
@@ -50,7 +51,7 @@ function TryTool({ server, onChange }: { server: Server; onChange: () => void })
     setBusy("sync");
     try {
       await post(`/mcp-servers/${server.id}/syncs`, { ...body(), every_minutes: every });
-      toast("Sync scheduled");
+      toast("Sync drafted: approve it to start");
       onChange();
     } catch (e) {
       toast(errText(e), true);
@@ -118,6 +119,11 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
       onChange();
     } catch (e) { toast(errText(e), true); } finally { setBusy(""); }
   };
+  const approveSync = async (s: Sync) => {
+    if (!confirm(`Approve this sync? Every ${s.every_minutes} min it will write what ${s.tool || s.resource} returns into your records.`)) return;
+    setBusy(s.id);
+    try { await post(`/mcp-servers/${server.id}/syncs/${s.id}/approve`); toast("Sync approved"); onChange(); } catch (e) { toast(errText(e), true); } finally { setBusy(""); }
+  };
   const dropSync = async (s: Sync) => {
     await del(`/mcp-servers/${server.id}/syncs/${s.id}`).catch((e) => toast(errText(e), true));
     onChange();
@@ -131,7 +137,8 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
           <div>
             <div style={{ fontWeight: 500 }}>{server.name}</div>
             <div className="faint mono" style={{ fontSize: 12 }}>{server.url}</div>
-            <div className="faint" style={{ fontSize: 12 }}>{server.status}{server.last_sync ? ` · last sync ${ago(server.last_sync)}` : ""}</div>
+            <StatusLine info={server.status_info} />
+            {server.last_sync && <div className="faint" style={{ fontSize: 12 }}>last sync {ago(server.last_sync)}</div>}
           </div>
         </div>
         <div className="row">
@@ -155,11 +162,13 @@ function ServerCard({ server, onChange }: { server: Server; onChange: () => void
                   <tr key={s.id}>
                     <td className="mono">{s.tool || s.resource} → {s.type}</td>
                     <td>{s.every_minutes >= 60 ? `${s.every_minutes / 60} h` : `${s.every_minutes} min`}</td>
-                    <td className={s.last_status.startsWith("error") ? "" : "faint"} style={{ fontSize: 12, color: s.last_status.startsWith("error") ? "var(--red)" : undefined }}>
-                      {s.last_run ? `${ago(s.last_run)} · ${s.last_status}` : "not run yet"}
+                    <td style={{ fontSize: 12 }}>
+                      <StatusLine info={s.status_info} />
+                      {s.last_run && <span className="faint">{ago(s.last_run)}</span>}
                     </td>
                     <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                      <button className="btn sm" onClick={() => runSync(s)} disabled={!!busy}>{busy === s.id ? <Spinner /> : <Play />} Run</button>
+                      {!s.approved && isAdmin && <button className="btn sm primary" onClick={() => approveSync(s)} disabled={!!busy}>Approve</button>}
+                      {s.approved && <button className="btn sm" onClick={() => runSync(s)} disabled={!!busy}>{busy === s.id ? <Spinner /> : <Play />} Run</button>}
                       {isAdmin && <button className="btn sm icon danger" aria-label="Remove sync" onClick={() => dropSync(s)}><Trash2 /></button>}
                     </td>
                   </tr>

@@ -220,6 +220,7 @@ https://YOUR-IRRIS/mcp?key=irr_…</pre>
         <p class="eyebrow">Reference</p>
         <h2 id="h-ref">Every endpoint</h2>
         <p class="lede">The full OpenAPI reference, with every field, is at <a href="/api/docs">/api/docs</a> (spec: <a href="/api/v1/openapi.json">/api/v1/openapi.json</a>). A guide for LLMs is at <a href="/llms.txt">/llms.txt</a>.</p>
+        <p class="lede"><b>Building an agent?</b> Give it <a href="/api/v1/openapi.json">/api/v1/openapi.json</a> and <a href="/llms.txt">/llms.txt</a>, not this page. Every error carries a <code>code</code> and a <code>next_action</code>; creates take an <code>Idempotency-Key</code>; <code>GET /api/v1/changes?cursor=</code> is a feed of everything that changed; <code>GET /api/v1/status/{kind}/{id}</code> says why anything is stuck and what unblocks it; webhooks are signed with HMAC-SHA256.</p>
         <div class="actions" style="justify-content: flex-start">
           <a class="btn primary" href="/app/signup">Get a key</a>
           <a class="btn ghost" href="/api/docs">API reference</a>

@@ -27,7 +27,8 @@ def db(tmp_path):
                   "jobs", "stored_files", "doc_pages", "embeddings", "memory_items", "memory_events",
                   "conv_summaries", "llm_calls", "ws_limits",
                   "media_settings", "camera_state", "watch_rules", "media_jobs", "observations", "camera_rois",
-                  "shift_summaries", "run_tracker", "instruments"):
+                  "shift_summaries", "run_tracker", "instruments", "changes", "audit_log", "approvals", "webhooks",
+                  "webhook_deliveries", "idempotency", "feedback", "onboarding"):
             d.execute(f"DELETE FROM {t}")
     dbmod.set_db(d)
     yield d

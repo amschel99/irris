@@ -89,8 +89,11 @@ def clean(body: dict) -> dict:
 
 def api(row: dict) -> dict:
     cfg = loads(row["config"], {})
-    return {"id": row["id"], "name": row["name"], "type": row["type"], "camera_id": row["camera_id"], **cfg,
-            "created": row["created"], "updated": row["updated"]}
+    from irris import ops
+    out = {"id": row["id"], "name": row["name"], "type": row["type"], "camera_id": row["camera_id"], **cfg,
+           "created": row["created"], "updated": row["updated"]}
+    out["status_info"] = ops.instrument_status(out)
+    return out
 
 
 def create(db: Database, workspace_id: str, body: dict) -> dict:

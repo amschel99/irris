@@ -3,6 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { RecordDrawer } from "../components/RecordDrawer";
 import { McpServersTab } from "../components/McpServers";
+import { QueryBox } from "../components/Platform";
+import { StatusLine } from "../components/Status";
 import { DocList, DocumentViewer, UploadRow, type UploadItem } from "../components/Knowledge";
 import { Code, CopyButton, Empty, ErrorBox, Field, Head, Loading, Modal, Spinner, Tabs, Toggle, TypeTag } from "../components/ui";
 import { del, get, patch, post } from "../lib/api";
@@ -174,7 +176,8 @@ function DatabaseCard({ source, onChange }: { source: DataSource; onChange: () =
           <Database size={16} />
           <div>
             <div style={{ fontWeight: 500 }}>{source.name}</div>
-            <div className="faint" style={{ fontSize: 12 }}>{source.status}{source.last_sync ? ` · ${ago(source.last_sync)}` : ""}</div>
+            <div className="faint" style={{ fontSize: 12 }}>{source.last_sync ? `synced ${ago(source.last_sync)}` : ""}</div>
+            <StatusLine info={(source as { status_info?: import("../components/Status").StatusInfo }).status_info} />
           </div>
         </div>
         <div className="row">
@@ -391,6 +394,7 @@ function RecordsTab({ onOpenDoc }: { onOpenDoc: (id: string, page?: number | nul
 
   return (
     <div className="stack lg">
+      <QueryBox onOpen={(id) => setOpen({ id })} />
       <div className="row wrap">
         <form className="ask-bar grow" style={{ height: 40, borderRadius: 10, minWidth: 240 }} onSubmit={(e) => { e.preventDefault(); setQuery(q.trim()); }}>
           <Search />

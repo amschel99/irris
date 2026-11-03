@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
-from irris import agent, auth, connectors, irf, llm, runs, store, vision
+from irris import agent, auth, connectors, irf, llm, runs, store, vision, ops
 from irris.auth import Ctx, ctx
 from irris.config import settings
 from irris.db import dumps, get_db, loads, new_id, now
@@ -31,6 +31,11 @@ async def body_of(request: Request) -> dict:
         return _json(await request.json())
     except ValueError:
         raise HTTPException(400, "the body isn't valid JSON")
+
+
+def actor_of(c: Ctx) -> str:
+    """Who did it, for the audit log: the person's email, or the API key."""
+    return c.user["email"] if c.user else f"api-key:{c.workspace.get('key_name') or 'key'}"
 
 
 def _err(e: Exception) -> HTTPException:
@@ -352,6 +357,7 @@ def source_api(row: dict) -> dict:
                            for t in cfg.get("schema", [])])
     if row["kind"] == "webhook":
         out.update(type=cfg.get("type", "event"), source=cfg.get("source", ""), hint=cfg.get("hint", ""))
+    out["status_info"] = ops.source_status(out)
     return out
 
 
@@ -435,6 +441,7 @@ async def sync_source(source_id: str, c: Ctx = Depends(ctx)):
             total += len(recs)
     except connectors.ConnectorError as e:
         c.db.execute("UPDATE sources SET status = ? WHERE id = ?", [f"error: {e}"[:200], source_id])
+        ops.emit(c.db, c.ws_id, "sync.failed", source_id, {"source": row["name"], "kind": "postgres", "error": str(e)[:300]})
         raise HTTPException(400, str(e))
     status = f"synced {total} rows from {len(cfg.get('tables', []))} tables" if cfg.get("tables") else \
         f"connected · {len(cfg['schema'])} tables (live queries only)"
@@ -478,9 +485,11 @@ def list_procedures(c: Ctx = Depends(ctx)):
 @router.post("/procedures")
 async def create_procedure(request: Request, c: Ctx = Depends(ctx)):
     try:
-        return store.save_procedure(c.db, c.ws_id, await body_of(request))
+        out = store.save_procedure(c.db, c.ws_id, await body_of(request))
     except (irf.IRFError, store.NotFound) as e:
         raise _err(e)
+    ops.audit(c.db, c.ws_id, actor_of(c), "procedure.created", "procedure", out["id"], after=out["steps"], detail=out["name"])
+    return out
 
 
 @router.get("/procedures/{proc_id}")
@@ -494,18 +503,24 @@ def get_procedure(proc_id: str, c: Ctx = Depends(ctx)):
 @router.put("/procedures/{proc_id}")
 async def update_procedure(proc_id: str, request: Request, c: Ctx = Depends(ctx)):
     try:
-        return store.save_procedure(c.db, c.ws_id, await body_of(request), record_id=proc_id)
+        before = store.procedure(c.db, c.ws_id, proc_id)
+        out = store.save_procedure(c.db, c.ws_id, await body_of(request), record_id=proc_id)
     except (irf.IRFError, store.NotFound) as e:
         raise _err(e)
+    ops.audit(c.db, c.ws_id, actor_of(c), "procedure.updated", "procedure", proc_id, before=before["steps"],
+              after=out["steps"], detail=out["name"])
+    return out
 
 
 @router.delete("/procedures/{proc_id}")
 def delete_procedure(proc_id: str, c: Ctx = Depends(ctx)):
     try:
-        store.procedure(c.db, c.ws_id, proc_id)
+        before = store.procedure(c.db, c.ws_id, proc_id)
         store.delete(c.db, c.ws_id, proc_id)
     except store.NotFound as e:
         raise _err(e)
+    ops.audit(c.db, c.ws_id, actor_of(c), "procedure.deleted", "procedure", proc_id, before=before["steps"],
+              detail=before["name"])
     return {"deleted": proc_id}
 
 
@@ -717,8 +732,10 @@ def delete_conversation(conv_id: str, c: Ctx = Depends(ctx)):
 def camera_api(row: dict) -> dict:
     age = vision.hub.age(row["id"])
     live = age is not None and age < vision.FRESH_SECONDS
-    return {"id": row["id"], "name": row["name"], "kind": row["kind"], "created": row["created"],
-            "live": live if row["kind"] == "phone" else None, "last_frame_age": age}
+    out = {"id": row["id"], "name": row["name"], "kind": row["kind"], "created": row["created"],
+           "live": live if row["kind"] == "phone" else None, "last_frame_age": age}
+    out["status_info"] = ops.camera_status(out)
+    return out
 
 
 def cameras_list(c: Ctx) -> dict:
@@ -912,9 +929,9 @@ async def recover_run(run_id: str, request: Request, c: Ctx = Depends(ctx)):
     b = await body_of(request)
     try:
         if b.get("dismiss"):
-            return runs.accept_recovery(c.db, c.ws_id, run_id, accept=False)
+            return runs.accept_recovery(c.db, c.ws_id, run_id, accept=False, actor=actor_of(c))
         if "accept" in b:
-            return runs.accept_recovery(c.db, c.ws_id, run_id, accept=bool(b["accept"]))
+            return runs.accept_recovery(c.db, c.ws_id, run_id, accept=bool(b["accept"]), actor=actor_of(c))
         return await runs.propose_recovery(c.db, c.workspace, run_id,
                                            step=int(b["step"]) if b.get("step") is not None else None,
                                            error=str(b.get("error") or ""))
@@ -922,12 +939,23 @@ async def recover_run(run_id: str, request: Request, c: Ctx = Depends(ctx)):
         raise _err(e)
 
 
-@router.post("/runs/{run_id}/{action}")
-def move_run(run_id: str, action: str, c: Ctx = Depends(ctx)):
+def move_run(run_id: str, action: str, c: Ctx) -> dict:
     try:
         return runs.move(c.db, c.ws_id, run_id, action)
     except (store.NotFound, runs.RunError) as e:
         raise _err(e)
+
+
+@router.post("/runs/{run_id}/back")
+def run_back(run_id: str, c: Ctx = Depends(ctx)):
+    """Go back a step (reopens the previous step)."""
+    return move_run(run_id, "back", c)
+
+
+@router.post("/runs/{run_id}/stop")
+def run_stop(run_id: str, c: Ctx = Depends(ctx)):
+    """Stop the run; its batch record lists what wasn't done."""
+    return move_run(run_id, "stop", c)
 
 
 # ================================================================ health and the standard

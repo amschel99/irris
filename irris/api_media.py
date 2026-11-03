@@ -438,6 +438,14 @@ async def read_instrument(iid: str, request: Request, c: Ctx = Depends(ctx)):
                        "needs_confirm": True, "reason": "read by the vision model; please confirm"}
     if cam:
         vision.hub.publish(cam, {"type": "instrument", "instrument_id": iid, "name": inst["name"], **out})
+    lim = limits or inst.get("limits") or {}
+    v = out.get("value")
+    if v is not None and not out.get("needs_confirm") and (
+            (lim.get("min") is not None and v < float(lim["min"])) or (lim.get("max") is not None and v > float(lim["max"]))):
+        from irris import ops
+        ops.emit(c.db, c.ws_id, "instrument.out_of_limits", iid,
+                 {"instrument": inst["name"], "value": v, "unit": out.get("unit") or inst.get("unit", ""),
+                  "limits": lim, "method": out.get("method")})
     return out
 
 

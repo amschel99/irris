@@ -87,7 +87,9 @@ TOOLS = [
      "finding something by its content (use search).",
      "parameters": {"type": "object", "properties": {
          "type": {"type": "string"}, "subject": {"type": "string"}, "source": {"type": "string"},
-         "hours": {"type": "number", "description": "only the last N hours"}, "limit": {"type": "integer", "default": 20}}}},
+         "hours": {"type": "number", "description": "only the last N hours"}, "limit": {"type": "integer", "default": 20},
+         "where": {"type": "string", "description": "a filter in plain words, e.g. 'batches last month where "
+                   "temperature > 185'; it's parsed into a visible query (type, subject, time window, conditions)"}}}},
     {"name": "read", "description": "Read a document page by page (about 8 pages per call). Returns `next`, the page "
      "to continue from, so any document can be read to the end across calls. Not for: finding one fact in a long "
      "document (use search, or search_in).",
@@ -352,6 +354,7 @@ class Turn:
         self.sources: list[dict] = []
         self.files: list[dict] = []
         self.actions: list[dict] = []
+        self.queries: list[dict] = []
         self.loaded: set[str] = set(CORE) | (loaded or set())
         self.offloaded: dict[str, str] = {}
 
@@ -480,6 +483,26 @@ class Turn:
                             "title": f"Statistics of {args.get('type') or 'reading'} {args.get('field') or 'value'}",
                             "type": "stats", "source": "records", "text": dumps(res["groups"][:3])})
             return {"cite": f"[{n}]", **res}
+        if name == "records" and str(args.get("where") or "").strip():
+            from irris import nlquery
+            q = await asyncio.to_thread(nlquery.parse, db, ws_id, str(args["where"]))
+            for k in ("type", "subject", "source"):
+                if args.get(k):
+                    q[k] = args[k]
+            if args.get("hours"):
+                q["since"] = now() - float(args["hours"]) * 3600
+            res = await asyncio.to_thread(nlquery.run, db, ws_id, q, min(int(args.get("limit") or 20), 100))
+            self.queries.append({"explain": res["explain"], "query": {k: v for k, v in q.items() if k != "text"},
+                                 "matched": res["total"]})
+            out = []
+            for r in res["records"]:
+                n = self._cite({"record_id": r["id"], "title": r["title"] or f"{r['type']} {r['subject']}",
+                                "type": r["type"], "source": r["source"], "text": r["text"] or dumps(r["data"])})
+                out.append({"cite": f"[{n}]", "type": r["type"], "subject": r["subject"], "title": r["title"],
+                            "time": time.strftime("%Y-%m-%d %H:%M", time.gmtime(r["time"])), "text": r["text"][:300],
+                            "data": r["data"]})
+            return {"query": res["explain"], "unparsed": q.get("unparsed") or [], "total": res["total"],
+                    "complete": res["complete"], "records": out}
         if name == "records":
             since = now() - float(args["hours"]) * 3600 if args.get("hours") else None
             res = store.query(db, ws_id, type=args.get("type") or "", subject=args.get("subject") or "",
@@ -876,7 +899,7 @@ async def answer(db: Database, workspace: dict, message: str, *, conversation_id
     used = set(grounding["cited"])
     sources = [s for s in turn.sources if s["n"] in used]
     meta = {"sources": sources, "tools": tools_used, "actions": turn.actions, "seconds": round(time.time() - started, 1),
-            "tools_loaded": sorted(turn.loaded - set(CORE)), "grounding": grounding, "task": memory.task_type(message),
+            "tools_loaded": sorted(turn.loaded - set(CORE)), "grounding": grounding, "queries": turn.queries, "task": memory.task_type(message),
             **meta_extra}
     msg_id = db.insert_id("INSERT INTO messages (conversation_id, role, content, meta, created) VALUES (?,?,?,?,?)",
                           [conversation_id, "assistant", text, dumps(meta), now()])

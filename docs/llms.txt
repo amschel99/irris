@@ -35,6 +35,20 @@ Resources: `irris://irf` (the data standard), `irris://workspace`.
 - `GET/POST /sources` (postgres, webhook), `POST /sources/{id}/sync`, `POST /sources/{id}/query` {"sql"}.
 - `GET/POST /mcp-servers` {"url", "token"} (connect an external MCP server), `POST /mcp-servers/{id}/call`
   {"tool"|"resource", "arguments", "save"?, "type"?}, `POST /mcp-servers/{id}/syncs` {"tool"|"resource", "every_minutes", "type"}.
+- `GET /status/{kind}/{id}` (run, job, media_job, camera, source, mcp_server, mcp_sync, instrument, webhook,
+  onboarding) -> {state, message, next_action, allowed_actions}; the same `status_info` is on those objects.
+- `GET /changes?cursor=&kinds=` feed (records.written, step.failed, deviation.opened, run.completed, batch.released,
+  approval.*, instrument.out_of_limits, sync.failed), oldest first; keep the cursor.
+- `POST /runs/{id}/signoff` {"meaning": "reviewed"|"approved", "password"} (people only; "approved" releases the batch).
+- `GET/POST /webhooks` {"url", "events"} (draft until an admin approves), `POST /webhooks/{id}/test|approve|pause`.
+  Deliveries are signed: X-Irris-Signature: t=<unix>,v1=<hex HMAC-SHA256 of "<t>.<body>" with the webhook secret>.
+- `POST /query/parse` {"text"} (plain words -> structured query, free), `POST /query/run` {"text"} or {"query"}.
+- `POST /onboarding` {"url"} or {"answers": {"makes", "process", "market"}}: draft twin; `POST /onboarding/decide`.
+- `POST /feedback` {"text"}: tell the Irris team anything.
+Errors: {"detail", "code", "next_action"}. Creates accept `Idempotency-Key` (same key + same body within 24 h -> the
+first response; different body -> 409).
+MCP without a key: resource irris://irf and tool irf_validate. With a key also api_list, api_describe, api_read,
+api_change (confirm with the person first) and status.
 Full reference: /api/docs and /api/v1/openapi.json. The data standard: /api/v1/irf.
 
 ## Rules

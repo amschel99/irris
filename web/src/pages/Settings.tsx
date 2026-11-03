@@ -1,4 +1,5 @@
 import { AudioLines, ExternalLink, KeyRound, Trash2, UserPlus } from "lucide-react";
+import { FeedbackPanel, WebhooksPanel } from "../components/Platform";
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Code, CopyButton, Empty, ErrorBox, Field, Head, Loading, Spinner, Tabs } from "../components/ui";
@@ -389,7 +390,13 @@ function DevelopersTab() {
         <h3>Clients that only take a URL</h3>
         <Code>{`${origin}/mcp?key=${key}`}</Code>
         <p className="faint" style={{ margin: 0, fontSize: 12 }}>A key in a URL can end up in logs. Prefer the header when the client supports it.</p>
+        <p className="muted" style={{ margin: 0, fontSize: 13 }}>Generic tools reach the whole API: <span className="mono">api_list</span>, <span className="mono">api_describe</span>, <span className="mono">api_read</span>, <span className="mono">api_change</span>, plus <span className="mono">status</span>. Without a key, <span className="mono">{origin}/mcp</span> still offers the IRF standard and <span className="mono">irf_validate</span>.</p>
       </section>
+      <section className="stack">
+        <div><h2>For AI agents</h2><p className="muted" style={{ margin: "4px 0 0" }}>Give agents <a href="/api/v1/openapi.json" target="_blank" rel="noreferrer" className="mono">/api/v1/openapi.json</a> and <a href="/llms.txt" target="_blank" rel="noreferrer" className="mono">/llms.txt</a>. Every error has a <span className="mono">code</span> and a <span className="mono">next_action</span>; creates accept an <span className="mono">Idempotency-Key</span> header; <span className="mono">GET /api/v1/changes?cursor=</span> is a feed of everything that changed; <span className="mono">GET /api/v1/status/&#123;kind&#125;/&#123;id&#125;</span> says why anything is stuck.</p></div>
+      </section>
+      <WebhooksPanel />
+      <FeedbackPanel />
     </div>
   );
 }

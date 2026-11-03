@@ -164,6 +164,42 @@ CREATE TABLE IF NOT EXISTS instruments (
   type TEXT NOT NULL, config TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL,
   updated DOUBLE PRECISION NOT NULL);
 CREATE INDEX IF NOT EXISTS instruments_ws ON instruments (workspace_id);
+-- ==== platform: change feed, audit log, approvals, webhooks, idempotency, feedback, onboarding (irris/ops.py) ====
+CREATE TABLE IF NOT EXISTS changes (
+  id {SERIAL}, workspace_id TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
+  data TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS changes_ws ON changes (workspace_id, id);
+CREATE TABLE IF NOT EXISTS audit_log (
+  id {SERIAL}, workspace_id TEXT NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL, kind TEXT NOT NULL,
+  ref TEXT NOT NULL DEFAULT '', before_hash TEXT NOT NULL DEFAULT '', after_hash TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '', prev_hash TEXT NOT NULL DEFAULT '', created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS audit_ws ON audit_log (workspace_id, id);
+CREATE TABLE IF NOT EXISTS approvals (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, kind TEXT NOT NULL, ref TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL DEFAULT '{}',
+  requested_by TEXT NOT NULL DEFAULT '', decided_by TEXT NOT NULL DEFAULT '', meaning TEXT NOT NULL DEFAULT '',
+  comment TEXT NOT NULL DEFAULT '', decided_at DOUBLE PRECISION, created DOUBLE PRECISION NOT NULL);
+CREATE INDEX IF NOT EXISTS approvals_ref ON approvals (workspace_id, kind, ref);
+CREATE TABLE IF NOT EXISTS webhooks (
+  id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', url TEXT NOT NULL,
+  events TEXT NOT NULL DEFAULT '[]', secret TEXT NOT NULL, status TEXT NOT NULL, approved_by TEXT NOT NULL DEFAULT '',
+  created DOUBLE PRECISION NOT NULL, updated DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id {SERIAL}, webhook_id TEXT NOT NULL, workspace_id TEXT NOT NULL, event TEXT NOT NULL, payload TEXT NOT NULL,
+  status TEXT NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next_at DOUBLE PRECISION NOT NULL,
+  last_code INTEGER, last_error TEXT NOT NULL DEFAULT '', created DOUBLE PRECISION NOT NULL,
+  delivered DOUBLE PRECISION);
+CREATE INDEX IF NOT EXISTS deliveries_due ON webhook_deliveries (status, next_at);
+CREATE TABLE IF NOT EXISTS idempotency (
+  key_hash TEXT PRIMARY KEY, body_hash TEXT NOT NULL, status_code INTEGER NOT NULL, response TEXT NOT NULL,
+  created DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS feedback (
+  id {SERIAL}, workspace_id TEXT NOT NULL, actor TEXT NOT NULL DEFAULT '', text TEXT NOT NULL,
+  context TEXT NOT NULL DEFAULT '{}', created DOUBLE PRECISION NOT NULL);
+CREATE TABLE IF NOT EXISTS onboarding (
+  workspace_id TEXT PRIMARY KEY, status TEXT NOT NULL, input TEXT NOT NULL DEFAULT '{}',
+  draft TEXT NOT NULL DEFAULT '{}', decisions TEXT NOT NULL DEFAULT '{}', job_id TEXT NOT NULL DEFAULT '',
+  error TEXT NOT NULL DEFAULT '', created DOUBLE PRECISION NOT NULL, updated DOUBLE PRECISION NOT NULL);
 """
 
 PG_EXTRA = """

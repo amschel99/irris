@@ -1,3 +1,4 @@
+import { DraftTwin } from "../components/Platform";
 import { ArrowRight, Check, CornerDownLeft, ScanLine, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -108,6 +109,8 @@ export function Overview() {
         <ErrorBox error={error} retry={reload} />
 
         <WorkingOn deps={[workspace?.id]} />
+
+        <DraftTwin compact />
 
         {onboarding && (
           <section className="stack">

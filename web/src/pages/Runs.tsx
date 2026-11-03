@@ -1,6 +1,8 @@
 import { ArrowLeft, Printer, ScanLine } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { Empty, ErrorBox, Head, Loading, ResultTag, StatusTag } from "../components/ui";
+import { SignOff } from "../components/Platform";
+import { StatusLine, type StatusInfo } from "../components/Status";
 import { get } from "../lib/api";
 import { useSession } from "../lib/session";
 import type { RecordSummary, RunSummary } from "../lib/types";
@@ -35,7 +37,7 @@ export function Runs() {
                   <td className="mono">{duration(r.started, r.ended)}</td>
                   <td className="mono">{r.checks}</td>
                   <td className={`mono${r.deviations ? " red" : ""}`}>{r.deviations}</td>
-                  <td><StatusTag status={r.status} deviations={r.deviations} /></td>
+                  <td><StatusTag status={r.status} deviations={r.deviations} />{(r as { status_info?: StatusInfo }).status_info && <StatusLine info={(r as { status_info?: StatusInfo }).status_info} compact />}</td>
                 </tr>
               ))}
             </tbody>
@@ -91,6 +93,7 @@ export function RunDetail() {
             </>}
           />
           <div className="stack lg">
+            {r.status === "active" ? <StatusLine info={(r as { status_info?: StatusInfo }).status_info} /> : <SignOff run={r as never} onDone={run.reload} />}
             <div className="stats">
               <div className="stat"><span className="num">{passed}/{r.steps.length}</span><span className="lbl">Steps passed</span></div>
               <div className="stat"><span className={`num${deviations.length ? " red" : ""}`}>{deviations.length}</span><span className="lbl">Deviations</span></div>

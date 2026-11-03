@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from irris import guidance, instruments, irf, llm, observe, perception, store, vision
+from irris import ops, guidance, instruments, irf, llm, observe, perception, store, vision
 from irris.db import Database, dumps, loads, new_id, now
 
 
@@ -89,7 +89,15 @@ def state(db: Database, workspace_id: str, run_id: str) -> dict:
             "procedure": {"id": proc["id"], "name": proc["name"]}, "camera_id": row["camera_id"],
             "started": row["started"], "ended": row["ended"], "steps": steps, "log": log[-50:],
             "phase": tv["phase"], "plan_version": tv["plan_version"], "recovery": tv["recovery"], "say": tv["say"],
-            "metrics": tv["metrics"]}
+            "metrics": tv["metrics"], **_signed(db, workspace_id, run_id, row["status"], steps, tv, focus)}
+
+
+def _signed(db: Database, workspace_id: str, run_id: str, status: str, steps: list, tv: dict, focus: int) -> dict:
+    sigs = ops.signatures(db, workspace_id, run_id)
+    released = any(x["meaning"] == "approved" and x["status"] == "approved" for x in sigs)
+    view = {"status": status, "step": min(focus, max(len(steps) - 1, 0)), "steps": steps, "phase": tv["phase"],
+            "recovery": tv["recovery"]}
+    return {"signatures": sigs, "released": released, "status_info": ops.run_status(view, sigs)}
 
 
 def start(db: Database, workspace_id: str, procedure_id: str, *, camera_id: str = "", user_id: str = "",
@@ -125,6 +133,10 @@ def list_runs(db: Database, workspace_id: str, limit: int = 50) -> list[dict]:
                     "started": r["started"], "ended": r["ended"], "checks": len(log),
                     "deviations": sum(1 for e in log if e["result"] in ("fail", "danger", "skip")
                                       or e.get("deviation") == "order")})
+        sigs = ops.signatures(db, workspace_id, r["id"])
+        out[-1].update(released=any(x["meaning"] == "approved" and x["status"] == "approved" for x in sigs),
+                       status_info=ops.run_status({"status": r["status"], "step": r["step"], "steps": [], "phase": "",
+                                                   "recovery": None}, sigs))
     return out
 
 
@@ -200,6 +212,16 @@ def record(db: Database, workspace_id: str, run_id: str, result: str, *, say: st
                [dumps(log), total if done else min(nxt, total - 1), status, ended, run_id])
     if done:
         _batch_record(db, workspace_id, run_id)
+    ev_data = {"run_id": run_id, "procedure": proc["name"], "label": row["label"], "step": idx + 1,
+               "instruction": plan_step.get("instruction", ""), "result": result, "by": by, "say": say or note}
+    if result in ("fail", "danger") and (by != "vision" or ev["confirmed_error"] or result == "danger"):
+        ops.emit(db, workspace_id, "step.failed", run_id, ev_data)
+    if ev["deviation"] or (ev["confirmed_error"] and result in ("fail", "danger")) or result == "skip":
+        ops.emit(db, workspace_id, "deviation.opened", run_id,
+                 {**ev_data, "kind": ev["deviation"] or ("skipped" if result == "skip" else "error")})
+    if done:
+        ops.emit(db, workspace_id, "run.completed", run_id, {"run_id": run_id, "procedure": proc["name"],
+                                                             "label": row["label"]})
     out = state(db, workspace_id, run_id)
     if row["camera_id"]:
         moved = out["status"] == "active" and out["step"] != idx
@@ -270,7 +292,8 @@ def _batch_record(db: Database, workspace_id: str, run_id: str) -> None:
                          "data": {"run_id": run_id, "procedure_id": s["procedure"]["id"], "status": s["status"],
                                   "started": s["started"], "ended": s["ended"], "steps": steps,
                                   "deviations": deviations, "log": s["log"], "recordings": s["recordings"],
-                                  "metrics": s["metrics"], "recovery": s["recovery"]},
+                                  "metrics": s["metrics"], "recovery": s["recovery"],
+                                  "signatures": s["signatures"], "released": s["released"]},
                          "links": [{"rel": "follows", "to": f"procedure:{s['procedure']['id']}"}]}, now=now())
     store.write(db, workspace_id, [rec])
 
@@ -521,7 +544,7 @@ async def propose_recovery(db: Database, workspace: dict, run_id: str, *, step: 
     return s
 
 
-def accept_recovery(db: Database, workspace_id: str, run_id: str, accept: bool = True) -> dict:
+def accept_recovery(db: Database, workspace_id: str, run_id: str, accept: bool = True, *, actor: str = "") -> dict:
     row = _row(db, workspace_id, run_id)
     if row["status"] != "active":
         raise RunError(f"this run is {row['status']}")
@@ -536,6 +559,8 @@ def accept_recovery(db: Database, workspace_id: str, run_id: str, accept: bool =
         plan.update(status="accepted", inserted=inserted)
     else:
         plan["status"] = "dismissed"
+    ops.audit(db, workspace_id, actor or "unknown", f"recovery_plan.{plan['status']}", "recovery_plan", run_id,
+              after={k: plan.get(k) for k in ("step", "what", "why", "fix", "insert")}, detail=str(plan.get("what") or ""))
     guidance.save(db, workspace_id, run_id, tr)
     db.execute("UPDATE runs SET step = ? WHERE id = ?", [guidance.focus(tr), run_id])
     s = state(db, workspace_id, run_id)

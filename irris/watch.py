@@ -297,9 +297,12 @@ _tasks: dict[str, asyncio.Task] = {}
 
 
 def job_api(r: dict) -> dict:
-    return {"id": r["id"], "kind": r["kind"], "status": r["status"], "progress": r["progress"], "note": r["note"],
-            "params": loads(r["params"], {}), "result": loads(r["result"], {}), "error": r["error"],
-            "created": r["created"], "updated": r["updated"]}
+    from irris import ops
+    out = {"id": r["id"], "kind": r["kind"], "status": r["status"], "progress": r["progress"], "note": r["note"],
+           "params": loads(r["params"], {}), "result": loads(r["result"], {}), "error": r["error"],
+           "created": r["created"], "updated": r["updated"]}
+    out["status_info"] = ops.job_status(out)
+    return out
 
 
 def start_job(db: Database, workspace_id: str, kind: str, params: dict, work: Callable[[Progress], Awaitable[dict]]) -> dict:

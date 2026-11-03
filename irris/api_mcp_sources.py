@@ -13,7 +13,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from irris import irf, mcp_client, store
+from irris import irf, mcp_client, ops, store
 from irris.auth import Ctx, ctx
 from irris.db import Database, dumps, get_db, loads, new_id, now
 from irris.security import decrypt, encrypt
@@ -44,10 +44,13 @@ def _headers(b: dict) -> dict:
 
 def server_api(row: dict) -> dict:
     cfg = loads(row["config"], {})
-    return {"id": row["id"], "name": row["name"], "url": cfg.get("url", ""), "server": cfg.get("server", {}),
+    syncs = [{**s, "approved": bool(s.get("approved")), "status_info": ops.sync_status(s)} for s in cfg.get("syncs", [])]
+    out = {"id": row["id"], "name": row["name"], "url": cfg.get("url", ""), "server": cfg.get("server", {}),
             "status": row["status"], "last_sync": row["last_sync"], "created": row["created"],
             "has_auth": bool(row["secret"]), "instructions": cfg.get("instructions", ""),
-            "tools": cfg.get("tools", []), "resources": cfg.get("resources", []), "syncs": cfg.get("syncs", [])}
+            "tools": cfg.get("tools", []), "resources": cfg.get("resources", []), "syncs": syncs}
+    out["status_info"] = ops.server_status(out)
+    return out
 
 
 def _row(db: Database, ws_id: str, server_id: str) -> dict:
@@ -179,10 +182,34 @@ async def add_sync(server_id: str, request: Request, c: Ctx = Depends(ctx)):
     every = max(MIN_EVERY, int(b.get("every_minutes") or 60))
     sync = {"id": new_id(), "tool": tool, "resource": resource, "arguments": b.get("arguments") or {},
             "every_minutes": every, "type": str(b.get("type") or "row"), "source": str(b.get("source") or ""),
-            "next_run": now(), "last_run": None, "last_status": "waiting"}
+            "next_run": now(), "last_run": None, "last_status": "waiting for approval", "approved": False,
+            "created_by": c.user["email"] if c.user else "api key"}
     cfg.setdefault("syncs", []).append(sync)
     c.db.execute("UPDATE sources SET config = ? WHERE id = ?", [dumps(cfg), server_id])
-    return sync
+    ops.audit(c.db, c.ws_id, c.user["email"] if c.user else "api key", "mcp_sync.drafted", "mcp_sync",
+              f"{server_id}:{sync['id']}", after={k: sync[k] for k in ("tool", "resource", "arguments", "every_minutes", "type")})
+    return {**sync, "status_info": ops.sync_status(sync)}
+
+
+@router.post("/mcp-servers/{server_id}/syncs/{sync_id}/approve")
+async def approve_sync(server_id: str, sync_id: str, request: Request, c: Ctx = Depends(ctx)):
+    """A sync writes records on a schedule, so it runs only after an admin approves it ({"approve": false} pauses)."""
+    c.require_admin()
+    b = await request.json() if (await request.body()) else {}
+    row = _row(c.db, c.ws_id, server_id)
+    cfg = loads(row["config"], {})
+    sync = next((s for s in cfg.get("syncs", []) if s["id"] == sync_id), None)
+    if not sync:
+        raise HTTPException(404, "sync not found")
+    approve = b.get("approve", True) is not False
+    actor = c.user["email"] if c.user else "api key"
+    sync.update(approved=approve, approved_by=actor if approve else "", next_run=now(),
+                last_status="approved" if approve else "paused")
+    c.db.execute("UPDATE sources SET config = ? WHERE id = ?", [dumps(cfg), server_id])
+    ops.decide(c.db, c.ws_id, "mcp_sync", f"{server_id}:{sync_id}", actor=actor,
+               status="approved" if approve else "rejected", title=f"{row['name']}: {sync['tool'] or sync['resource']}",
+               payload={k: sync[k] for k in ("tool", "resource", "arguments", "every_minutes", "type")})
+    return {**sync, "status_info": ops.sync_status(sync)}
 
 
 @router.delete("/mcp-servers/{server_id}/syncs/{sync_id}")
@@ -210,6 +237,8 @@ async def run_sync(db: Database, server_id: str, sync_id: str) -> dict:
     sync = next((s for s in cfg.get("syncs", []) if s["id"] == sync_id), None)
     if not sync:
         return {"status": "gone"}
+    if not sync.get("approved"):
+        return {"status": "waiting for approval: an admin approves a sync before it writes records"}
     url, headers = _conn(row)
     label = sync["tool"] or sync["resource"]
     t0 = time.time()
@@ -226,6 +255,8 @@ async def run_sync(db: Database, server_id: str, sync_id: str) -> dict:
         status = f"ok: {res['created']} new, {res['updated']} updated ({time.time() - t0:.1f} s)"
     except (mcp_client.MCPError, irf.IRFError) as e:
         status = f"error: {e}"[:240]
+        ops.emit(db, row["workspace_id"], "sync.failed", f"{server_id}:{sync_id}",
+                 {"source": row["name"], "kind": "mcp", "sync": label, "error": str(e)[:300]})
     # re-read: the config may have changed while the call ran
     row = db.one("SELECT config FROM sources WHERE id = ?", [server_id])
     if row:
@@ -241,7 +272,7 @@ async def run_due(db: Database) -> int:
     ran = 0
     for row in db.execute("SELECT id, config FROM sources WHERE kind = 'mcp'"):
         for s in loads(row["config"], {}).get("syncs", []):
-            if (s.get("next_run") or 0) <= now():
+            if s.get("approved") and (s.get("next_run") or 0) <= now():
                 await run_sync(db, row["id"], s["id"])
                 ran += 1
     return ran

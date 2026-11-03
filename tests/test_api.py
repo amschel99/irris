@@ -211,7 +211,10 @@ def test_mcp(signed_in):
     c = signed_in
     key = c.post("/api/v1/keys", json={"name": "claude"}).json()["key"]
     c.cookies.clear()
-    assert c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).status_code == 401
+    anon = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()   # no key: read-only tier
+    assert [t["name"] for t in anon["result"]["tools"]] == ["irf_validate"]
+    assert c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+                  headers={"Authorization": "Bearer irr_wrong"}).status_code == 401
     h = {"Authorization": f"Bearer {key}"}
     init = c.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize",
                                 "params": {"protocolVersion": "2025-06-18"}}, headers=h).json()
