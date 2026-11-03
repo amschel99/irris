@@ -87,6 +87,9 @@ async def chat_chain(models: list[Model], messages: list[dict], tools: list[dict
     raise ModelError("; ".join(errors))
 
 
+NO_THINK = ("qwen3.5", "qwen3-vl", "qwen3:")      # models whose thinking is switched off (vision, short answers)
+
+
 def _url(base: str) -> str:
     return base + ("/chat/completions" if re.search(r"/v\d+$", base) else "/v1/chat/completions")
 
@@ -100,6 +103,9 @@ async def chat(m: Model, messages: list[dict], tools: list[dict] | None = None, 
         body["tools"] = tools
     if json_mode:
         body["response_format"] = {"type": "json_object"}
+    if any(k in m.model.lower() for k in NO_THINK):
+        # Small thinking models spend the whole token budget reasoning and return no answer; switch it off.
+        body["reasoning_effort"] = "none"
     headers = {"Authorization": f"Bearer {m.api_key}"} if m.api_key else {}
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=5)) as client:
